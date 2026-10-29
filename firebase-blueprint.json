@@ -1,0 +1,203 @@
+{
+  "entities": {
+    "LiveState": {
+      "title": "LiveState",
+      "description": "Global CMS live broadcast state for orientation, scale mode, audio mute, kiosk lock, and active OTA release.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Authenticated owner UID" },
+        "orientation": { "type": "string", "enum": ["LANDSCAPE", "PORTRAIT", "ROTATE_90", "ROTATE_180", "ROTATE_270"] },
+        "scaleMode": { "type": "string", "enum": ["FILL", "FIT", "ZOOM"] },
+        "isMuted": { "type": "boolean" },
+        "kioskLocked": { "type": "boolean" },
+        "activeZoneId": { "type": "string" },
+        "adminPin": { "type": "string" },
+        "lastPushCommand": { "type": "string" },
+        "activeOtaVersionCode": { "type": "integer" },
+        "activeOtaVersionName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "FieldValue.serverTimestamp()" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "FieldValue.serverTimestamp()" }
+      },
+      "required": [
+        "userId",
+        "orientation",
+        "scaleMode",
+        "isMuted",
+        "kioskLocked",
+        "activeZoneId",
+        "adminPin",
+        "lastPushCommand",
+        "activeOtaVersionCode",
+        "activeOtaVersionName",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PlaylistVideo": {
+      "title": "PlaylistVideo",
+      "description": "Chunk-uploaded video creative stored in the CMS playlist and synced to local display storage.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "sourceUrl": { "type": "string" },
+        "backupUrl": { "type": "string" },
+        "localFileName": { "type": "string" },
+        "zoneId": { "type": "string" },
+        "sizeBytes": { "type": "integer" },
+        "chunkCount": { "type": "integer" },
+        "isVerifiedCached": { "type": "boolean" },
+        "sortOrder": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "userId",
+        "title",
+        "sourceUrl",
+        "backupUrl",
+        "localFileName",
+        "zoneId",
+        "sizeBytes",
+        "chunkCount",
+        "isVerifiedCached",
+        "sortOrder",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "SignageDevice": {
+      "title": "SignageDevice",
+      "description": "Paired Android TV or Digital Display client with 6-digit pairing code, 2.5s heartbeat, and A/B OTA update slot telemetry.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "pairingCode": { "type": "string" },
+        "deviceName": { "type": "string" },
+        "zoneId": { "type": "string" },
+        "isPaired": { "type": "boolean" },
+        "isOnline": { "type": "boolean" },
+        "lastHeartbeatEpochSec": { "type": "integer" },
+        "currentVideoTitle": { "type": "string" },
+        "cachedVideoCount": { "type": "integer" },
+        "installedVersionCode": { "type": "integer" },
+        "installedVersionName": { "type": "string" },
+        "previousSlotVersionCode": { "type": "integer" },
+        "previousSlotVersionName": { "type": "string" },
+        "otaStatus": { "type": "string", "enum": ["UP_TO_DATE", "CHECKING", "DOWNLOADING", "VERIFYING", "INSTALLED", "ROLLED_BACK", "FAILED"] },
+        "lastOtaMessage": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "userId",
+        "pairingCode",
+        "deviceName",
+        "zoneId",
+        "isPaired",
+        "isOnline",
+        "lastHeartbeatEpochSec",
+        "currentVideoTitle",
+        "cachedVideoCount",
+        "installedVersionCode",
+        "installedVersionName",
+        "previousSlotVersionCode",
+        "previousSlotVersionName",
+        "otaStatus",
+        "lastOtaMessage",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PlaybackZone": {
+      "title": "PlaybackZone",
+      "description": "Display playback zone with granular operator permission flags and orientation overrides.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "zoneName": { "type": "string" },
+        "locationTag": { "type": "string" },
+        "operatorName": { "type": "string" },
+        "operatorRole": { "type": "string", "enum": ["SUPER_ADMIN", "ZONE_OPERATOR", "CONTENT_UPLOADER", "VIEWER"] },
+        "canPushPlaylist": { "type": "boolean" },
+        "canRotateScreen": { "type": "boolean" },
+        "canManageOta": { "type": "boolean" },
+        "orientationOverride": { "type": "string", "enum": ["INHERIT", "LANDSCAPE", "PORTRAIT", "ROTATE_90", "ROTATE_180", "ROTATE_270"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "userId",
+        "zoneName",
+        "locationTag",
+        "operatorName",
+        "operatorRole",
+        "canPushPlaylist",
+        "canRotateScreen",
+        "canManageOta",
+        "orientationOverride",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "OtaRelease": {
+      "title": "OtaRelease",
+      "description": "Over-the-Air software update package manifest with SHA-256 verification and rollback metadata.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "versionCode": { "type": "integer" },
+        "versionName": { "type": "string" },
+        "releaseNotes": { "type": "string" },
+        "targetZoneId": { "type": "string" },
+        "packageUrl": { "type": "string" },
+        "sha256Checksum": { "type": "string" },
+        "sizeBytes": { "type": "integer" },
+        "chunkCount": { "type": "integer" },
+        "isMandatory": { "type": "boolean" },
+        "simulateCorruptPackage": { "type": "boolean" },
+        "releaseStatus": { "type": "string", "enum": ["ACTIVE", "STAGED", "ROLLED_BACK", "ARCHIVED"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "userId",
+        "versionCode",
+        "versionName",
+        "releaseNotes",
+        "targetZoneId",
+        "packageUrl",
+        "sha256Checksum",
+        "sizeBytes",
+        "chunkCount",
+        "isMandatory",
+        "simulateCorruptPackage",
+        "releaseStatus",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/cms_global/{stateId}": {
+      "schema": "LiveState",
+      "description": "Global CMS live state (cms_global/live_state) scoped to authenticated operator"
+    },
+    "/users/{userId}/videos/{videoId}": {
+      "schema": "PlaylistVideo",
+      "description": "Playlist video items uploaded via 600KB chunks"
+    },
+    "/users/{userId}/devices/{deviceId}": {
+      "schema": "SignageDevice",
+      "description": "Paired digital signage TV displays and OTA slot status"
+    },
+    "/users/{userId}/zones/{zoneId}": {
+      "schema": "PlaybackZone",
+      "description": "Playback zones and granular user permission assignments"
+    },
+    "/users/{userId}/ota_releases/{releaseId}": {
+      "schema": "OtaRelease",
+      "description": "OTA software release packages for automatic client updates and rollback"
+    }
+  }
+}

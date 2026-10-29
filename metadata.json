@@ -1,0 +1,6 @@
+{
+  "name": "PulseCast Signage",
+  "description": "Production-grade Digital Signage & TV Ad Network with Android TV Kiosk Player, Real-Time Cloud CMS Dashboard, and A/B OTA Software Updates with Automatic Rollback.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

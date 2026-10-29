@@ -1,0 +1,294 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 1: Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidOrientation(val) {
+      return val is string && val in ['LANDSCAPE', 'PORTRAIT', 'ROTATE_90', 'ROTATE_180', 'ROTATE_270'];
+    }
+
+    function isValidScaleMode(val) {
+      return val is string && val in ['FILL', 'FIT', 'ZOOM'];
+    }
+
+    function isValidLiveState(data, userId) {
+      return data.userId is string && data.userId == userId && data.userId == request.auth.uid &&
+             isValidOrientation(data.orientation) &&
+             isValidScaleMode(data.scaleMode) &&
+             data.isMuted is bool &&
+             data.kioskLocked is bool &&
+             data.activeZoneId is string && data.activeZoneId.size() >= 1 && data.activeZoneId.size() <= 128 &&
+             data.adminPin is string && data.adminPin.size() >= 4 && data.adminPin.size() <= 8 &&
+             data.lastPushCommand is string && data.lastPushCommand.size() <= 200 &&
+             data.activeOtaVersionCode is int && data.activeOtaVersionCode >= 1 &&
+             data.activeOtaVersionName is string && data.activeOtaVersionName.size() >= 1 && data.activeOtaVersionName.size() <= 40 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidPlaylistVideo(data, userId) {
+      return data.userId is string && data.userId == userId && data.userId == request.auth.uid &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+             data.sourceUrl is string && data.sourceUrl.size() >= 1 && data.sourceUrl.size() <= 1000 &&
+             data.backupUrl is string && data.backupUrl.size() >= 1 && data.backupUrl.size() <= 1000 &&
+             data.localFileName is string && data.localFileName.size() >= 1 && data.localFileName.size() <= 200 &&
+             data.zoneId is string && data.zoneId.size() >= 1 && data.zoneId.size() <= 128 &&
+             data.sizeBytes is int && data.sizeBytes >= 0 &&
+             data.chunkCount is int && data.chunkCount >= 1 &&
+             data.isVerifiedCached is bool &&
+             data.sortOrder is int && data.sortOrder >= 0 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidSignageDevice(data, userId) {
+      return data.userId is string && data.userId == userId && data.userId == request.auth.uid &&
+             data.pairingCode is string && data.pairingCode.size() == 6 &&
+             data.deviceName is string && data.deviceName.size() >= 1 && data.deviceName.size() <= 100 &&
+             data.zoneId is string && data.zoneId.size() >= 1 && data.zoneId.size() <= 128 &&
+             data.isPaired is bool &&
+             data.isOnline is bool &&
+             data.lastHeartbeatEpochSec is int && data.lastHeartbeatEpochSec >= 0 &&
+             data.currentVideoTitle is string && data.currentVideoTitle.size() <= 120 &&
+             data.cachedVideoCount is int && data.cachedVideoCount >= 0 &&
+             data.installedVersionCode is int && data.installedVersionCode >= 1 &&
+             data.installedVersionName is string && data.installedVersionName.size() >= 1 && data.installedVersionName.size() <= 40 &&
+             data.previousSlotVersionCode is int && data.previousSlotVersionCode >= 0 &&
+             data.previousSlotVersionName is string && data.previousSlotVersionName.size() <= 40 &&
+             data.otaStatus is string && data.otaStatus in ['UP_TO_DATE', 'CHECKING', 'DOWNLOADING', 'VERIFYING', 'INSTALLED', 'ROLLED_BACK', 'FAILED'] &&
+             data.lastOtaMessage is string && data.lastOtaMessage.size() <= 300 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidPlaybackZone(data, userId) {
+      return data.userId is string && data.userId == userId && data.userId == request.auth.uid &&
+             data.zoneName is string && data.zoneName.size() >= 1 && data.zoneName.size() <= 80 &&
+             data.locationTag is string && data.locationTag.size() >= 1 && data.locationTag.size() <= 120 &&
+             data.operatorName is string && data.operatorName.size() >= 1 && data.operatorName.size() <= 80 &&
+             data.operatorRole is string && data.operatorRole in ['SUPER_ADMIN', 'ZONE_OPERATOR', 'CONTENT_UPLOADER', 'VIEWER'] &&
+             data.canPushPlaylist is bool &&
+             data.canRotateScreen is bool &&
+             data.canManageOta is bool &&
+             data.orientationOverride is string && data.orientationOverride in ['INHERIT', 'LANDSCAPE', 'PORTRAIT', 'ROTATE_90', 'ROTATE_180', 'ROTATE_270'] &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidOtaRelease(data, userId) {
+      return data.userId is string && data.userId == userId && data.userId == request.auth.uid &&
+             data.versionCode is int && data.versionCode >= 1 &&
+             data.versionName is string && data.versionName.size() >= 1 && data.versionName.size() <= 40 &&
+             data.releaseNotes is string && data.releaseNotes.size() >= 1 && data.releaseNotes.size() <= 500 &&
+             data.targetZoneId is string && data.targetZoneId.size() >= 1 && data.targetZoneId.size() <= 128 &&
+             data.packageUrl is string && data.packageUrl.size() >= 1 && data.packageUrl.size() <= 1000 &&
+             data.sha256Checksum is string && data.sha256Checksum.size() >= 8 && data.sha256Checksum.size() <= 128 &&
+             data.sizeBytes is int && data.sizeBytes >= 1 &&
+             data.chunkCount is int && data.chunkCount >= 1 &&
+             data.isMandatory is bool &&
+             data.simulateCorruptPackage is bool &&
+             data.releaseStatus is string && data.releaseStatus in ['ACTIVE', 'STAGED', 'ROLLED_BACK', 'ARCHIVED'] &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /users/{userId} {
+      // 1. Live Broadcast State (cms_global/live_state)
+      match /cms_global/{stateId} {
+        allow get: if isOwner(userId) && isValidId(stateId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+
+        allow create: if isOwner(userId) &&
+                         isValidId(stateId) &&
+                         incoming().keys().hasAll([
+                           'userId', 'orientation', 'scaleMode', 'isMuted', 'kioskLocked',
+                           'activeZoneId', 'adminPin', 'lastPushCommand',
+                           'activeOtaVersionCode', 'activeOtaVersionName', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'orientation', 'scaleMode', 'isMuted', 'kioskLocked',
+                           'activeZoneId', 'adminPin', 'lastPushCommand',
+                           'activeOtaVersionCode', 'activeOtaVersionName', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidLiveState(incoming(), userId);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(stateId) &&
+                         isValidLiveState(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'orientation', 'scaleMode', 'isMuted', 'kioskLocked',
+                           'activeZoneId', 'adminPin', 'lastPushCommand',
+                           'activeOtaVersionCode', 'activeOtaVersionName', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(stateId);
+      }
+
+      // 2. Playlist Videos
+      match /videos/{videoId} {
+        allow get: if isOwner(userId) && isValidId(videoId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+
+        allow create: if isOwner(userId) &&
+                         isValidId(videoId) &&
+                         incoming().keys().hasAll([
+                           'userId', 'title', 'sourceUrl', 'backupUrl', 'localFileName',
+                           'zoneId', 'sizeBytes', 'chunkCount', 'isVerifiedCached',
+                           'sortOrder', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'title', 'sourceUrl', 'backupUrl', 'localFileName',
+                           'zoneId', 'sizeBytes', 'chunkCount', 'isVerifiedCached',
+                           'sortOrder', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidPlaylistVideo(incoming(), userId);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(videoId) &&
+                         isValidPlaylistVideo(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'title', 'sourceUrl', 'backupUrl', 'localFileName',
+                           'zoneId', 'sizeBytes', 'chunkCount', 'isVerifiedCached',
+                           'sortOrder', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(videoId);
+      }
+
+      // 3. Signage Display Devices
+      match /devices/{deviceId} {
+        allow get: if isOwner(userId) && isValidId(deviceId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+
+        allow create: if isOwner(userId) &&
+                         isValidId(deviceId) &&
+                         incoming().keys().hasAll([
+                           'userId', 'pairingCode', 'deviceName', 'zoneId', 'isPaired',
+                           'isOnline', 'lastHeartbeatEpochSec', 'currentVideoTitle',
+                           'cachedVideoCount', 'installedVersionCode', 'installedVersionName',
+                           'previousSlotVersionCode', 'previousSlotVersionName',
+                           'otaStatus', 'lastOtaMessage', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'pairingCode', 'deviceName', 'zoneId', 'isPaired',
+                           'isOnline', 'lastHeartbeatEpochSec', 'currentVideoTitle',
+                           'cachedVideoCount', 'installedVersionCode', 'installedVersionName',
+                           'previousSlotVersionCode', 'previousSlotVersionName',
+                           'otaStatus', 'lastOtaMessage', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidSignageDevice(incoming(), userId);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(deviceId) &&
+                         isValidSignageDevice(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'pairingCode', 'deviceName', 'zoneId', 'isPaired',
+                           'isOnline', 'lastHeartbeatEpochSec', 'currentVideoTitle',
+                           'cachedVideoCount', 'installedVersionCode', 'installedVersionName',
+                           'previousSlotVersionCode', 'previousSlotVersionName',
+                           'otaStatus', 'lastOtaMessage', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(deviceId);
+      }
+
+      // 4. Playback Zones & Granular Operator Permissions
+      match /zones/{zoneId} {
+        allow get: if isOwner(userId) && isValidId(zoneId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+
+        allow create: if isOwner(userId) &&
+                         isValidId(zoneId) &&
+                         incoming().keys().hasAll([
+                           'userId', 'zoneName', 'locationTag', 'operatorName', 'operatorRole',
+                           'canPushPlaylist', 'canRotateScreen', 'canManageOta',
+                           'orientationOverride', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'zoneName', 'locationTag', 'operatorName', 'operatorRole',
+                           'canPushPlaylist', 'canRotateScreen', 'canManageOta',
+                           'orientationOverride', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidPlaybackZone(incoming(), userId);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(zoneId) &&
+                         isValidPlaybackZone(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'zoneName', 'locationTag', 'operatorName', 'operatorRole',
+                           'canPushPlaylist', 'canRotateScreen', 'canManageOta',
+                           'orientationOverride', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(zoneId);
+      }
+
+      // 5. OTA Software Update Releases
+      match /ota_releases/{releaseId} {
+        allow get: if isOwner(userId) && isValidId(releaseId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+
+        allow create: if isOwner(userId) &&
+                         isValidId(releaseId) &&
+                         incoming().keys().hasAll([
+                           'userId', 'versionCode', 'versionName', 'releaseNotes',
+                           'targetZoneId', 'packageUrl', 'sha256Checksum', 'sizeBytes',
+                           'chunkCount', 'isMandatory', 'simulateCorruptPackage',
+                           'releaseStatus', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'versionCode', 'versionName', 'releaseNotes',
+                           'targetZoneId', 'packageUrl', 'sha256Checksum', 'sizeBytes',
+                           'chunkCount', 'isMandatory', 'simulateCorruptPackage',
+                           'releaseStatus', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidOtaRelease(incoming(), userId);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(releaseId) &&
+                         isValidOtaRelease(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'versionCode', 'versionName', 'releaseNotes',
+                           'targetZoneId', 'packageUrl', 'sha256Checksum', 'sizeBytes',
+                           'chunkCount', 'isMandatory', 'simulateCorruptPackage',
+                           'releaseStatus', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(releaseId);
+      }
+    }
+  }
+}

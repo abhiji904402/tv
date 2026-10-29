@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Outer Broadcast Display Frame -->
+    <path
+        android:fillColor="#06B6D4"
+        android:pathData="M26,30 C26,26.69 28.69,24 32,24 L76,24 C79.31,24 82,26.69 82,30 L82,66 C82,69.31 79.31,72 76,72 L60,72 L64,80 L70,80 L70,84 L38,84 L38,80 L44,80 L48,72 L32,72 C28.69,72 26,69.31 26,66 Z M32,30 L32,66 L76,66 L76,30 Z" />
+    <!-- Inner Play & Signal Pulse Emblem -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M46,38 L66,48 L46,58 Z" />
+</vector>
