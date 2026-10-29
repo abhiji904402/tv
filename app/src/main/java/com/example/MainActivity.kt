@@ -30,48 +30,23 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.credentials.CredentialManager
-import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.data.local.ChunkedStorageAndOtaManager
-import com.example.data.model.LiveState
-import com.example.data.repository.SignageRepository
-import com.example.ui.auth.AuthScreen
-import com.example.ui.auth.signOutFromGoogle
-import com.example.ui.cms.CmsDashboardScreen
+import com.example.data.remote.VercelCmsApiClient
 import com.example.ui.player.TvDisplayClientScreen
 import com.example.ui.theme.ControlDeckSurfaceVariant
 import com.example.ui.theme.ElectricCyan
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.SignalGreen
-import com.example.ui.viewmodel.AppOperatingMode
-import com.example.ui.viewmodel.DataUiState
 import com.example.ui.viewmodel.SignageViewModel
-import com.google.firebase.Firebase
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.auth.FirebaseUser
-import com.google.firebase.auth.auth
-import com.google.firebase.firestore.FirebaseFirestore
-import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
-
-internal fun FirebaseAuth.authStateFlow(): Flow<FirebaseUser?> = callbackFlow {
-    val listener = FirebaseAuth.AuthStateListener { auth ->
-        trySend(auth.currentUser)
-    }
-    addAuthStateListener(listener)
-    awaitClose { removeAuthStateListener(listener) }
-}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -79,57 +54,34 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
-                AppNavigationRoot()
+                PulseCastTvClientApp()
             }
         }
     }
 }
 
 @Composable
-fun AppNavigationRoot(auth: FirebaseAuth = Firebase.auth) {
-    val currentUser by auth.authStateFlow().collectAsStateWithLifecycle(initialValue = auth.currentUser)
-    val user = currentUser
-
-    if (user == null) {
-        AuthScreen(onAuthSuccess = { /* AuthStateListener updates currentUser */ })
-    } else {
-        AuthenticatedSignageApp(currentUserId = user.uid)
-    }
-}
-
-@Composable
-fun AuthenticatedSignageApp(currentUserId: String) {
+fun PulseCastTvClientApp() {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val credentialManager = remember(context) { CredentialManager.create(context) }
     val localManager = remember(context) { ChunkedStorageAndOtaManager(context.applicationContext) }
 
     val viewModel: SignageViewModel = viewModel(
-        key = currentUserId,
         factory = viewModelFactory {
             initializer {
-                val app = checkNotNull(this[APPLICATION_KEY]) {
-                    "APPLICATION_KEY missing from CreationExtras"
-                }
-                val databaseId = app.getString(R.string.firestore_database_id)
-                val db = FirebaseFirestore.getInstance(databaseId)
                 SignageViewModel(
-                    repository = SignageRepository(db),
                     localManager = localManager,
-                    currentUserId = currentUserId
+                    vercelClient = VercelCmsApiClient()
                 )
             }
         }
     )
 
-    val operatingMode by viewModel.operatingMode.collectAsStateWithLifecycle()
-    val selectedCmsTab by viewModel.selectedCmsTab.collectAsStateWithLifecycle()
-    val liveStateUi by viewModel.liveStateUi.collectAsStateWithLifecycle()
-    val videosUi by viewModel.videosUi.collectAsStateWithLifecycle()
-    val devicesUi by viewModel.devicesUi.collectAsStateWithLifecycle()
-    val zonesUi by viewModel.zonesUi.collectAsStateWithLifecycle()
-    val otaReleasesUi by viewModel.otaReleasesUi.collectAsStateWithLifecycle()
-
+    val cmsServerUrl by viewModel.cmsServerUrl.collectAsStateWithLifecycle()
+    val isWebCmsConnected by viewModel.isWebCmsConnected.collectAsStateWithLifecycle()
+    val deviceName by viewModel.deviceName.collectAsStateWithLifecycle()
+    val assignedVideoId by viewModel.assignedVideoId.collectAsStateWithLifecycle()
+    val liveState by viewModel.liveState.collectAsStateWithLifecycle()
+    val videos by viewModel.videos.collectAsStateWithLifecycle()
     val localDeviceId by viewModel.localDeviceId.collectAsStateWithLifecycle()
     val localPairingCode by viewModel.localPairingCode.collectAsStateWithLifecycle()
     val otaSlotState by viewModel.otaSlotState.collectAsStateWithLifecycle()
@@ -143,57 +95,28 @@ fun AuthenticatedSignageApp(currentUserId: String) {
     val isAdminPanelOpen by viewModel.isAdminPanelOpen.collectAsStateWithLifecycle()
     val pinError by viewModel.pinError.collectAsStateWithLifecycle()
 
-    val liveState = (liveStateUi as? DataUiState.Success)?.data ?: LiveState(userId = currentUserId)
-    val videos = (videosUi as? DataUiState.Success)?.data ?: emptyList()
-    val devices = (devicesUi as? DataUiState.Success)?.data ?: emptyList()
-    val zones = (zonesUi as? DataUiState.Success)?.data ?: emptyList()
-    val otaReleases = (otaReleasesUi as? DataUiState.Success)?.data ?: emptyList()
-
     Box(modifier = Modifier.fillMaxSize()) {
-        when (operatingMode) {
-            AppOperatingMode.CMS_DASHBOARD -> {
-                CmsDashboardScreen(
-                    viewModel = viewModel,
-                    localManager = localManager,
-                    liveState = liveState,
-                    videos = videos,
-                    devices = devices,
-                    zones = zones,
-                    otaReleases = otaReleases,
-                    selectedTab = selectedCmsTab,
-                    chunkTelemetry = chunkTelemetry,
-                    otaSlotState = otaSlotState,
-                    otaProgressPercent = otaProgressPercent,
-                    localPairingCode = localPairingCode,
-                    onSignOut = {
-                        signOutFromGoogle(
-                            credentialManager = credentialManager,
-                            onSignOutComplete = {},
-                            scope = scope
-                        )
-                    }
-                )
-            }
-
-            AppOperatingMode.TV_DISPLAY_CLIENT -> {
-                TvDisplayClientScreen(
-                    viewModel = viewModel,
-                    localManager = localManager,
-                    liveState = liveState,
-                    videos = videos,
-                    pairingCode = localPairingCode,
-                    deviceId = localDeviceId,
-                    otaSlotState = otaSlotState,
-                    otaProgressPercent = otaProgressPercent,
-                    diagnosticLogs = diagnosticLogs,
-                    isUsingBackupStream = isUsingBackupStream,
-                    lastSyncCycleCount = lastSyncCycleCount,
-                    isPinDialogVisible = isPinDialogVisible,
-                    isAdminPanelOpen = isAdminPanelOpen,
-                    pinError = pinError
-                )
-            }
-        }
+        TvDisplayClientScreen(
+            viewModel = viewModel,
+            localManager = localManager,
+            cmsServerUrl = cmsServerUrl,
+            isWebCmsConnected = isWebCmsConnected,
+            deviceName = deviceName,
+            assignedVideoId = assignedVideoId,
+            liveState = liveState,
+            videos = videos,
+            pairingCode = localPairingCode,
+            deviceId = localDeviceId,
+            otaSlotState = otaSlotState,
+            otaProgressPercent = otaProgressPercent,
+            chunkTelemetry = chunkTelemetry,
+            diagnosticLogs = diagnosticLogs,
+            isUsingBackupStream = isUsingBackupStream,
+            lastSyncCycleCount = lastSyncCycleCount,
+            isPinDialogVisible = isPinDialogVisible,
+            isAdminPanelOpen = isAdminPanelOpen,
+            pinError = pinError
+        )
 
         // Instant Sync Toast Overlay
         AnimatedVisibility(

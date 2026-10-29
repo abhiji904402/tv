@@ -36,6 +36,7 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
 
     companion object {
         const val CHUNK_SIZE_BYTES = 600 * 1024 // 600KB chunks as specified
+        const val DEFAULT_CMS_SERVER_URL = "https://tv-br.vercel.app"
         private const val PREFS_NAME = "pulsecast_ota_and_device_prefs"
     }
 
@@ -51,6 +52,17 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
             if (!exists()) mkdirs()
         }
 
+    fun getCmsServerUrl(): String {
+        val saved = prefs.getString("cms_server_url", null)?.trim()?.trimEnd('/')
+        return if (!saved.isNullOrBlank()) saved else DEFAULT_CMS_SERVER_URL
+    }
+
+    fun setCmsServerUrl(url: String): String {
+        val cleaned = url.trim().trimEnd('/').ifBlank { DEFAULT_CMS_SERVER_URL }
+        prefs.edit().putString("cms_server_url", cleaned).apply()
+        return cleaned
+    }
+
     fun getOrCreateDeviceId(): String {
         val existing = prefs.getString("device_id", null)
         if (!existing.isNullOrBlank()) return existing
@@ -65,6 +77,21 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
         val generated = (100000..999999).random().toString()
         prefs.edit().putString("pairing_code", generated).apply()
         return generated
+    }
+
+    fun getOrCreateDeviceName(): String {
+        val existing = prefs.getString("device_name", null)
+        if (!existing.isNullOrBlank()) return existing
+        val code = getOrCreatePairingCode()
+        val generated = "Android TV #$code"
+        prefs.edit().putString("device_name", generated).apply()
+        return generated
+    }
+
+    fun setDeviceName(name: String): String {
+        val cleaned = name.trim().ifBlank { "Android TV #${getOrCreatePairingCode()}" }
+        prefs.edit().putString("device_name", cleaned).apply()
+        return cleaned
     }
 
     fun regeneratePairingCode(): String {

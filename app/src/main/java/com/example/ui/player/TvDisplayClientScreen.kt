@@ -3,6 +3,9 @@ package com.example.ui.player
 import android.net.Uri
 import android.view.KeyEvent
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -16,6 +19,8 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -31,26 +36,25 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AdminPanelSettings
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDone
-import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
-import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material.icons.filled.SettingsBackupRestore
 import androidx.compose.material.icons.filled.SystemUpdateAlt
 import androidx.compose.material.icons.filled.Tv
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
-import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -123,7 +127,7 @@ import com.example.ui.theme.SignalGreen
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.WatchdogAmber
-import com.example.ui.viewmodel.AppOperatingMode
+import com.example.ui.viewmodel.ChunkTransferTelemetry
 import com.example.ui.viewmodel.SignageViewModel
 import kotlinx.coroutines.delay
 
@@ -132,12 +136,17 @@ import kotlinx.coroutines.delay
 fun TvDisplayClientScreen(
     viewModel: SignageViewModel,
     localManager: ChunkedStorageAndOtaManager,
+    cmsServerUrl: String,
+    isWebCmsConnected: Boolean,
+    deviceName: String,
+    assignedVideoId: String,
     liveState: LiveState,
     videos: List<PlaylistVideo>,
     pairingCode: String,
     deviceId: String,
     otaSlotState: OtaSlotState,
     otaProgressPercent: Int?,
+    chunkTelemetry: ChunkTransferTelemetry,
     diagnosticLogs: List<DiagnosticLogEntry>,
     isUsingBackupStream: Boolean,
     lastSyncCycleCount: Long,
@@ -149,7 +158,7 @@ fun TvDisplayClientScreen(
     var isBufferingNow by remember { mutableStateOf(false) }
     var currentMediaIndex by remember { mutableIntStateOf(0) }
 
-    // Block back navigation when Kiosk Mode Lock is active; otherwise return to CMS Dashboard
+    // Kiosk Mode Lock back handler
     BackHandler(enabled = true) {
         if (isAdminPanelOpen) {
             viewModel.closeAdminPanel()
@@ -157,8 +166,6 @@ fun TvDisplayClientScreen(
             viewModel.dismissAdminPinPrompt()
         } else if (liveState.kioskLocked) {
             viewModel.showToast("Kiosk Mode Locked — Tap top-right corner 5x to unlock Admin Panel")
-        } else {
-            viewModel.switchOperatingMode(AppOperatingMode.CMS_DASHBOARD)
         }
     }
 
@@ -193,10 +200,13 @@ fun TvDisplayClientScreen(
         } else {
             val concatenatingSource = ConcatenatingMediaSource()
             videos.forEach { video ->
-                val uriToPlay = if (isUsingBackupStream) {
-                    Uri.parse(video.backupUrl.ifBlank { SignageViewModel.VERIFIED_BACKUP_STREAM_URL })
-                } else {
-                    Uri.parse(video.sourceUrl.ifBlank { SignageViewModel.VERIFIED_BACKUP_STREAM_URL })
+                val localUri = if (video.id.startsWith("local_")) {
+                    localManager.getLocalVideoUri(video.localFileName)
+                } else null
+                val uriToPlay = when {
+                    isUsingBackupStream -> Uri.parse(video.backupUrl.ifBlank { SignageViewModel.VERIFIED_BACKUP_STREAM_URL })
+                    localUri != null -> localUri
+                    else -> Uri.parse(video.sourceUrl.ifBlank { SignageViewModel.VERIFIED_BACKUP_STREAM_URL })
                 }
                 val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
                     .createMediaSource(
@@ -305,13 +315,16 @@ fun TvDisplayClientScreen(
         ) {
             if (videos.isEmpty()) {
                 StandbyPairingBroadcastCanvas(
+                    cmsServerUrl = cmsServerUrl,
+                    isWebCmsConnected = isWebCmsConnected,
+                    deviceName = deviceName,
                     pairingCode = pairingCode,
                     deviceId = deviceId,
                     liveState = liveState,
                     otaSlotState = otaSlotState,
                     lastSyncCycleCount = lastSyncCycleCount,
                     onOpenAdminPin = { viewModel.openAdminPinPrompt() },
-                    onSwitchToCms = { viewModel.switchOperatingMode(AppOperatingMode.CMS_DASHBOARD) }
+                    onForceSync = { viewModel.forceImmediateSync() }
                 )
             } else {
                 AndroidView(
@@ -333,7 +346,7 @@ fun TvDisplayClientScreen(
             }
         }
 
-        // 2. Top-Left Minimal Telemetry HUD Pill (Shows Offline Verified ✔, Orientation, and OTA Slot)
+        // 2. Top-Left Minimal Telemetry HUD Pill (Shows Web CMS Connection Dot, Pairing Code, Offline Verified ✔, Orientation)
         val activeVideo = videos.getOrNull(currentMediaIndex)
         val isActiveVideoCached = activeVideo?.let {
             it.isVerifiedCached || localManager.isFileVerifiedCached(it.localFileName)
@@ -345,17 +358,17 @@ fun TvDisplayClientScreen(
                 .windowInsetsPadding(WindowInsets.safeDrawing)
                 .padding(16.dp)
                 .clip(RoundedCornerShape(50))
-                .background(ObsidianBackground.copy(alpha = 0.78f))
+                .background(ObsidianBackground.copy(alpha = 0.82f))
                 .border(1.dp, BorderSlate, RoundedCornerShape(50))
                 .padding(horizontal = 14.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Box(
                 modifier = Modifier
                     .size(10.dp)
                     .clip(CircleShape)
-                    .background(SignalGreen)
+                    .background(if (isWebCmsConnected) SignalGreen else AlertCrimson)
             )
             Text(
                 text = "PAIR: $pairingCode",
@@ -363,10 +376,7 @@ fun TvDisplayClientScreen(
                 color = MaterialTheme.colorScheme.onSurface
             )
             if (videos.isNotEmpty()) {
-                Text(
-                    text = "•",
-                    color = TextMuted
-                )
+                Text(text = "•", color = TextMuted)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -377,7 +387,7 @@ fun TvDisplayClientScreen(
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.widthIn(max = 180.dp)
+                        modifier = Modifier.widthIn(max = 160.dp)
                     )
                     if (isActiveVideoCached) {
                         Text(
@@ -402,9 +412,9 @@ fun TvDisplayClientScreen(
             )
         }
 
-        // 3. Background OTA Software Update Progress / Rollback Banner
+        // 3. 600KB Chunk Sync / Background OTA Progress Banner
         AnimatedVisibility(
-            visible = otaProgressPercent != null || otaSlotState.otaStatus == "ROLLED_BACK",
+            visible = chunkTelemetry.isActive || otaProgressPercent != null || otaSlotState.otaStatus == "ROLLED_BACK",
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier
@@ -430,48 +440,66 @@ fun TvDisplayClientScreen(
                     )
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = if (otaSlotState.otaStatus == "ROLLED_BACK") {
-                                Icons.Default.SettingsBackupRestore
-                            } else {
-                                Icons.Default.SystemUpdateAlt
-                            },
-                            contentDescription = "OTA Status",
-                            tint = Color.White,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
+                    if (chunkTelemetry.isActive) {
                         Text(
-                            text = if (otaSlotState.otaStatus == "ROLLED_BACK") {
-                                "OTA AUTO-ROLLBACK EXECUTED (${otaSlotState.activeSlot})"
-                            } else {
-                                "BACKGROUND OTA UPDATE (${otaSlotState.otaStatus})"
-                            },
+                            text = "${chunkTelemetry.label} — Chunk ${chunkTelemetry.currentChunk}/${chunkTelemetry.totalChunks} (600KB)",
                             style = MaterialTheme.typography.labelLarge,
-                            color = Color.White
+                            color = ElectricCyan
                         )
-                    }
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = otaSlotState.lastOtaMessage,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White.copy(alpha = 0.9f)
-                    )
-                    if (otaProgressPercent != null) {
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
+                        val pct = if (chunkTelemetry.totalChunks > 0) {
+                            chunkTelemetry.currentChunk.toFloat() / chunkTelemetry.totalChunks.toFloat()
+                        } else 0.5f
                         LinearProgressIndicator(
-                            progress = { (otaProgressPercent / 100f).coerceIn(0f, 1f) },
+                            progress = { pct.coerceIn(0f, 1f) },
                             modifier = Modifier.fillMaxWidth(),
                             color = ElectricCyan,
                             trackColor = BorderSlate
                         )
+                    } else {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (otaSlotState.otaStatus == "ROLLED_BACK") {
+                                    Icons.Default.SettingsBackupRestore
+                                } else {
+                                    Icons.Default.SystemUpdateAlt
+                                },
+                                contentDescription = "OTA Status",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = if (otaSlotState.otaStatus == "ROLLED_BACK") {
+                                    "OTA AUTO-ROLLBACK EXECUTED (${otaSlotState.activeSlot})"
+                                } else {
+                                    "BACKGROUND OTA UPDATE (${otaSlotState.otaStatus})"
+                                },
+                                style = MaterialTheme.typography.labelLarge,
+                                color = Color.White
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = otaSlotState.lastOtaMessage,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color.White.copy(alpha = 0.9f)
+                        )
+                        if (otaProgressPercent != null) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            LinearProgressIndicator(
+                                progress = { (otaProgressPercent / 100f).coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth(),
+                                color = ElectricCyan,
+                                trackColor = BorderSlate
+                            )
+                        }
                     }
                 }
             }
         }
 
-        // 4. Hidden 5-Tap Top-Right Corner Gesture Zone (Minimum 88dp touch target for Kiosk Admin Unlock)
+        // 4. Hidden 5-Tap Top-Right Corner Gesture Zone (96dp touch target for Kiosk Admin Unlock)
         val cornerInteraction = remember { MutableInteractionSource() }
         Box(
             modifier = Modifier
@@ -486,7 +514,6 @@ fun TvDisplayClientScreen(
                 .testTag("hidden_admin_corner_tap_zone"),
             contentAlignment = Alignment.TopEnd
         ) {
-            // Subtle telemetry dot indicating Kiosk Lock state
             Surface(
                 color = ObsidianBackground.copy(alpha = 0.65f),
                 shape = RoundedCornerShape(50),
@@ -526,19 +553,28 @@ fun TvDisplayClientScreen(
         // 6. Protected Admin Settings Panel Overlay
         if (isAdminPanelOpen) {
             ProtectedAdminSettingsModal(
+                cmsServerUrl = cmsServerUrl,
+                isWebCmsConnected = isWebCmsConnected,
+                deviceName = deviceName,
+                pairingCode = pairingCode,
+                assignedVideoId = assignedVideoId,
                 liveState = liveState,
                 videos = videos,
                 otaSlotState = otaSlotState,
                 diagnosticLogs = diagnosticLogs,
                 localManager = localManager,
+                onUpdateCmsUrl = { viewModel.updateCmsServerUrl(it) },
+                onUpdateDeviceName = { viewModel.updateDeviceName(it) },
+                onRegeneratePairingCode = { viewModel.regenerateSixDigitPairingCode() },
+                onForceSync = { viewModel.forceImmediateSync() },
                 onSetOrientation = { viewModel.setOrientation(it) },
                 onSetScaleMode = { viewModel.setScaleMode(it) },
                 onToggleMute = { viewModel.toggleAudioMute(it) },
                 onToggleKioskLock = { viewModel.toggleKioskLock(it) },
+                onIngestLocalVideo = { uri, title -> viewModel.ingestLocalVideoForOfflineCache(uri, title) },
                 onDeleteVideo = { viewModel.deleteVideoFromPlaylist(it) },
                 onManualOtaRollback = { viewModel.triggerManualOtaRollback() },
                 onClearLogs = { viewModel.clearDiagnosticLogs() },
-                onSwitchToCms = { viewModel.switchOperatingMode(AppOperatingMode.CMS_DASHBOARD) },
                 onClose = { viewModel.closeAdminPanel() }
             )
         }
@@ -547,13 +583,16 @@ fun TvDisplayClientScreen(
 
 @Composable
 private fun StandbyPairingBroadcastCanvas(
+    cmsServerUrl: String,
+    isWebCmsConnected: Boolean,
+    deviceName: String,
     pairingCode: String,
     deviceId: String,
     liveState: LiveState,
     otaSlotState: OtaSlotState,
     lastSyncCycleCount: Long,
     onOpenAdminPin: () -> Unit,
-    onSwitchToCms: () -> Unit
+    onForceSync: () -> Unit
 ) {
     Box(
         modifier = Modifier
@@ -568,7 +607,6 @@ private fun StandbyPairingBroadcastCanvas(
             ),
         contentAlignment = Alignment.Center
     ) {
-        // Subtle technical grid background
         Canvas(modifier = Modifier.fillMaxSize()) {
             val step = 64.dp.toPx()
             var x = 0f
@@ -596,7 +634,7 @@ private fun StandbyPairingBroadcastCanvas(
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .widthIn(max = 560.dp)
+                .widthIn(max = 580.dp)
                 .padding(24.dp)
                 .border(1.5.dp, ElectricCyan.copy(alpha = 0.5f), RoundedCornerShape(24.dp)),
             shape = RoundedCornerShape(24.dp),
@@ -605,7 +643,7 @@ private fun StandbyPairingBroadcastCanvas(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(28.dp),
+                    .padding(26.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Row(
@@ -616,7 +654,7 @@ private fun StandbyPairingBroadcastCanvas(
                         imageVector = Icons.Default.Tv,
                         contentDescription = null,
                         tint = ElectricCyan,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(22.dp)
                     )
                     Text(
                         text = "ANDROID TV & DIGITAL DISPLAY CLIENT",
@@ -625,24 +663,59 @@ private fun StandbyPairingBroadcastCanvas(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Web CMS Connection Pill
+                Surface(
+                    color = if (isWebCmsConnected) SignalGreen.copy(alpha = 0.15f) else WatchdogAmber.copy(alpha = 0.15f),
+                    shape = RoundedCornerShape(50),
+                    modifier = Modifier.border(
+                        1.dp,
+                        if (isWebCmsConnected) SignalGreen.copy(alpha = 0.4f) else WatchdogAmber.copy(alpha = 0.4f),
+                        RoundedCornerShape(50)
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isWebCmsConnected) Icons.Default.CloudDone else Icons.Default.CloudOff,
+                            contentDescription = null,
+                            tint = if (isWebCmsConnected) SignalGreen else WatchdogAmber,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Text(
+                            text = if (isWebCmsConnected) {
+                                "LIVE CONNECTED TO $cmsServerUrl"
+                            } else {
+                                "POLLING WEB CMS: $cmsServerUrl"
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (isWebCmsConnected) SignalGreen else WatchdogAmber
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
 
                 Text(
-                    text = "Awaiting Playlist Stream",
+                    text = deviceName,
                     style = MaterialTheme.typography.headlineLarge,
                     color = MaterialTheme.colorScheme.onSurface,
                     textAlign = TextAlign.Center
                 )
 
                 Text(
-                    text = "Playlist starts empty by design. Pair this display using the 6-digit code below or upload video creatives in the CMS Dashboard.",
+                    text = "Controlled remotely from your Web CMS Dashboard ($cmsServerUrl). Enter this 6-digit pairing code in the Web Dashboard to control orientation, scale, and video playback live.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextSecondary,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.padding(top = 6.dp)
                 )
 
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(18.dp))
 
                 // 6-Digit Pairing Code Display Box
                 Surface(
@@ -650,7 +723,7 @@ private fun StandbyPairingBroadcastCanvas(
                     shape = RoundedCornerShape(18.dp),
                     modifier = Modifier
                         .border(1.dp, BorderSlate, RoundedCornerShape(18.dp))
-                        .padding(horizontal = 28.dp, vertical = 16.dp)
+                        .padding(horizontal = 28.dp, vertical = 14.dp)
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
@@ -658,7 +731,7 @@ private fun StandbyPairingBroadcastCanvas(
                             style = MaterialTheme.typography.labelMedium,
                             color = TextSecondary
                         )
-                        Spacer(modifier = Modifier.height(6.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
                             text = pairingCode.chunked(3).joinToString(" "),
                             style = MaterialTheme.typography.displayLarge,
@@ -668,9 +741,8 @@ private fun StandbyPairingBroadcastCanvas(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(18.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
-                // Live Telemetry Footer
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly
@@ -683,7 +755,7 @@ private fun StandbyPairingBroadcastCanvas(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(22.dp))
+                Spacer(modifier = Modifier.height(20.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -707,11 +779,11 @@ private fun StandbyPairingBroadcastCanvas(
                     }
 
                     Button(
-                        onClick = onSwitchToCms,
+                        onClick = onForceSync,
                         modifier = Modifier
                             .weight(1f)
                             .height(48.dp)
-                            .testTag("switch_to_cms_button"),
+                            .testTag("sync_web_cms_now_button"),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = ElectricCyan,
@@ -719,12 +791,12 @@ private fun StandbyPairingBroadcastCanvas(
                         )
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Dashboard,
+                            imageVector = Icons.Default.Refresh,
                             contentDescription = null,
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Open CMS Dashboard", fontWeight = FontWeight.Bold)
+                        Text("Sync Web CMS Now", fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -780,7 +852,7 @@ private fun AdminPinVerificationDialog(
                     style = MaterialTheme.typography.headlineMedium
                 )
                 Text(
-                    text = "Enter operator PIN code (Default: 1234) to unlock display diagnostics, orientation controls, and OTA rollback.",
+                    text = "Enter operator PIN code (Default: 1234) to configure Web CMS URL, orientation overrides, offline cache, and OTA rollback.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextSecondary,
                     textAlign = TextAlign.Center,
@@ -840,23 +912,37 @@ private fun AdminPinVerificationDialog(
 
 @Composable
 private fun ProtectedAdminSettingsModal(
+    cmsServerUrl: String,
+    isWebCmsConnected: Boolean,
+    deviceName: String,
+    pairingCode: String,
+    assignedVideoId: String,
     liveState: LiveState,
     videos: List<PlaylistVideo>,
     otaSlotState: OtaSlotState,
     diagnosticLogs: List<DiagnosticLogEntry>,
     localManager: ChunkedStorageAndOtaManager,
+    onUpdateCmsUrl: (String) -> Unit,
+    onUpdateDeviceName: (String) -> Unit,
+    onRegeneratePairingCode: () -> Unit,
+    onForceSync: () -> Unit,
     onSetOrientation: (String) -> Unit,
     onSetScaleMode: (String) -> Unit,
     onToggleMute: (Boolean) -> Unit,
     onToggleKioskLock: (Boolean) -> Unit,
+    onIngestLocalVideo: (Uri, String) -> Unit,
     onDeleteVideo: (PlaylistVideo) -> Unit,
     onManualOtaRollback: () -> Unit,
     onClearLogs: () -> Unit,
-    onSwitchToCms: () -> Unit,
     onClose: () -> Unit
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
-    val tabs = listOf("Display & Kiosk", "Live Playlist (${videos.size})", "OTA & Rollback", "Diagnostics (${diagnosticLogs.size})")
+    val tabs = listOf(
+        "Web CMS & Display",
+        "Offline Cache (${videos.size})",
+        "OTA & Rollback",
+        "Logs (${diagnosticLogs.size})"
+    )
 
     Box(
         modifier = Modifier
@@ -869,14 +955,13 @@ private fun ProtectedAdminSettingsModal(
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .widthIn(max = 820.dp)
-                .fillMaxHeight(0.9f)
+                .widthIn(max = 840.dp)
+                .fillMaxHeight(0.92f)
                 .border(1.dp, BorderSlate, RoundedCornerShape(22.dp)),
             shape = RoundedCornerShape(22.dp),
             colors = CardDefaults.cardColors(containerColor = ControlDeckSurface)
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
-                // Header
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -896,36 +981,22 @@ private fun ProtectedAdminSettingsModal(
                         )
                         Column {
                             Text(
-                                text = "Protected Admin Settings Panel",
+                                text = "TV Client Protected Admin Settings",
                                 style = MaterialTheme.typography.titleLarge
                             )
                             Text(
-                                text = "PIN Verified • Active Slot: ${otaSlotState.activeSlot} (v${otaSlotState.installedVersionName})",
+                                text = "Code: $pairingCode • Web CMS: $cmsServerUrl (${if (isWebCmsConnected) "CONNECTED" else "OFFLINE"})",
                                 style = MaterialTheme.typography.labelMedium,
-                                color = SignalGreen
+                                color = if (isWebCmsConnected) SignalGreen else WatchdogAmber
                             )
                         }
                     }
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            onClick = onSwitchToCms,
-                            modifier = Modifier.height(40.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Dashboard,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("CMS View")
-                        }
-                        IconButton(onClick = onClose) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Close Admin Panel"
-                            )
-                        }
+                    IconButton(onClick = onClose) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close Admin Panel"
+                        )
                     }
                 }
 
@@ -957,7 +1028,15 @@ private fun ProtectedAdminSettingsModal(
                 ) {
                     when (selectedTab) {
                         0 -> AdminDisplayAndKioskTab(
+                            cmsServerUrl = cmsServerUrl,
+                            deviceName = deviceName,
+                            pairingCode = pairingCode,
+                            assignedVideoId = assignedVideoId,
                             liveState = liveState,
+                            onUpdateCmsUrl = onUpdateCmsUrl,
+                            onUpdateDeviceName = onUpdateDeviceName,
+                            onRegeneratePairingCode = onRegeneratePairingCode,
+                            onForceSync = onForceSync,
                             onSetOrientation = onSetOrientation,
                             onSetScaleMode = onSetScaleMode,
                             onToggleMute = onToggleMute,
@@ -966,6 +1045,7 @@ private fun ProtectedAdminSettingsModal(
                         1 -> AdminPlaylistManagerTab(
                             videos = videos,
                             localManager = localManager,
+                            onIngestLocalVideo = onIngestLocalVideo,
                             onDeleteVideo = onDeleteVideo
                         )
                         2 -> AdminOtaRollbackTab(
@@ -983,26 +1063,101 @@ private fun ProtectedAdminSettingsModal(
     }
 }
 
+@kotlin.OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AdminDisplayAndKioskTab(
+    cmsServerUrl: String,
+    deviceName: String,
+    pairingCode: String,
+    assignedVideoId: String,
     liveState: LiveState,
+    onUpdateCmsUrl: (String) -> Unit,
+    onUpdateDeviceName: (String) -> Unit,
+    onRegeneratePairingCode: () -> Unit,
+    onForceSync: () -> Unit,
     onSetOrientation: (String) -> Unit,
     onSetScaleMode: (String) -> Unit,
     onToggleMute: (Boolean) -> Unit,
     onToggleKioskLock: (Boolean) -> Unit
 ) {
+    var urlInput by remember(cmsServerUrl) { mutableStateOf(cmsServerUrl) }
+    var nameInput by remember(deviceName) { mutableStateOf(deviceName) }
     val orientations = listOf("LANDSCAPE", "PORTRAIT", "ROTATE_90", "ROTATE_180", "ROTATE_270")
     val scales = listOf("FILL", "FIT", "ZOOM")
 
-    Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
         Text(
-            text = "Screen & Video Orientation Controls",
+            text = "Web CMS Dashboard Connection (2.5s Live Sync)",
             style = MaterialTheme.typography.titleMedium,
             color = ElectricCyan
         )
+
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = urlInput,
+                onValueChange = { urlInput = it },
+                label = { Text("Web CMS Server URL") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+            Button(
+                onClick = { onUpdateCmsUrl(urlInput) },
+                modifier = Modifier.height(52.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = ElectricCyan,
+                    contentColor = ObsidianBackground
+                )
+            ) {
+                Text("Save & Sync", fontWeight = FontWeight.Bold)
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = nameInput,
+                onValueChange = { nameInput = it },
+                label = { Text("TV Screen Name (Shown in Web CMS)") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+            OutlinedButton(
+                onClick = { onUpdateDeviceName(nameInput) },
+                modifier = Modifier.height(52.dp)
+            ) {
+                Text("Rename TV")
+            }
+            OutlinedButton(
+                onClick = onRegeneratePairingCode,
+                modifier = Modifier.height(52.dp)
+            ) {
+                Text("New Code ($pairingCode)")
+            }
+        }
+
+        HorizontalDivider(color = BorderSlate)
+
+        Text(
+            text = "Device Orientation (Synced with Web CMS • Assigned Video: $assignedVideoId)",
+            style = MaterialTheme.typography.titleMedium,
+            color = ElectricCyan
+        )
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             orientations.forEach { orient ->
                 FilterChip(
@@ -1074,7 +1229,7 @@ private fun AdminDisplayAndKioskTab(
                     style = MaterialTheme.typography.titleMedium
                 )
                 Text(
-                    text = "Synchronized in real time with cms_global/live_state",
+                    text = "Synchronized in real time with Web CMS ($cmsServerUrl)",
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextSecondary
                 )
@@ -1091,67 +1246,102 @@ private fun AdminDisplayAndKioskTab(
 private fun AdminPlaylistManagerTab(
     videos: List<PlaylistVideo>,
     localManager: ChunkedStorageAndOtaManager,
+    onIngestLocalVideo: (Uri, String) -> Unit,
     onDeleteVideo: (PlaylistVideo) -> Unit
 ) {
-    if (videos.isEmpty()) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(
-                text = "Playlist is empty. Upload videos in the CMS Dashboard.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = TextSecondary
-            )
+    val photoPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            onIngestLocalVideo(uri, "Local Cached Spot")
         }
-    } else {
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(videos, key = { it.id }) { video ->
-                val isCached = video.isVerifiedCached || localManager.isFileVerifiedCached(video.localFileName)
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = ControlDeckSurfaceVariant),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+    }
+
+    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Synced & Offline Verified Videos (✔)",
+                style = MaterialTheme.typography.titleMedium,
+                color = ElectricCyan
+            )
+            OutlinedButton(
+                onClick = {
+                    photoPicker.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                    )
+                }
+            ) {
+                Icon(imageVector = Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Cache Local Video (600KB Chunks)")
+            }
+        }
+
+        if (videos.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    text = "Playlist is empty. Upload or assign videos from the Web CMS Dashboard (https://tv-br.vercel.app/).",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = TextSecondary,
+                    textAlign = TextAlign.Center
+                )
+            }
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(videos, key = { it.id }) { video ->
+                    val isCached = video.isVerifiedCached || localManager.isFileVerifiedCached(video.localFileName)
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = ControlDeckSurfaceVariant),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Text(
-                                    text = video.title,
-                                    style = MaterialTheme.typography.titleMedium
-                                )
-                                if (isCached) {
-                                    Surface(
-                                        color = SignalGreen.copy(alpha = 0.2f),
-                                        shape = RoundedCornerShape(50)
-                                    ) {
-                                        Text(
-                                            text = "✔ Offline Verified",
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = SignalGreen,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = video.title,
+                                        style = MaterialTheme.typography.titleMedium
+                                    )
+                                    if (isCached) {
+                                        Surface(
+                                            color = SignalGreen.copy(alpha = 0.2f),
+                                            shape = RoundedCornerShape(50)
+                                        ) {
+                                            Text(
+                                                text = "✔ Offline Verified",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = SignalGreen,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                            )
+                                        }
                                     }
                                 }
+                                Text(
+                                    text = "Local: ${video.localFileName} • ${video.chunkCount} x 600KB chunks",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = TextSecondary
+                                )
                             }
-                            Text(
-                                text = "Local: ${video.localFileName} • ${video.chunkCount} x 600KB chunks",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = TextSecondary
-                            )
-                        }
-                        IconButton(onClick = { onDeleteVideo(video) }) {
-                            Icon(
-                                imageVector = Icons.Default.DeleteOutline,
-                                contentDescription = "Delete Video",
-                                tint = AlertCrimson
-                            )
+                            IconButton(onClick = { onDeleteVideo(video) }) {
+                                Icon(
+                                    imageVector = Icons.Default.DeleteOutline,
+                                    contentDescription = "Delete Video",
+                                    tint = AlertCrimson
+                                )
+                            }
                         }
                     }
                 }

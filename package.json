@@ -1,0 +1,12 @@
+{
+  "name": "pulsecast-digital-signage-cms",
+  "version": "1.2.0",
+  "description": "PulseCast Production Digital Signage & TV Ad Network Web CMS Dashboard & Serverless API",
+  "main": "api/index.js",
+  "scripts": {
+    "start": "node api/index.js"
+  },
+  "engines": {
+    "node": ">=18.x"
+  }
+}
