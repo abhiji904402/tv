@@ -1,9 +1,4 @@
 <resources>
-    <string name="app_name">PulseCast Signage</string>
-    <string name="cms_dashboard_title">PulseCast CMS Dashboard</string>
-    <string name="tv_display_mode_label">TV Display Mode</string>
-    <string name="sign_in_with_google">Sign in with Google</string>
-    <string name="offline_verified_badge">✔ Offline Verified</string>
-    <string name="admin_pin_prompt_title">Protected Admin Settings</string>
-    <string name="ota_rollback_action">Force Rollback to Previous Slot</string>
+    <string name="app_name">PulseCast</string>
+    <string name="accessibility_guard_description">PulseCast 24x7 Digital Signage Guard — Automatically launches and keeps your TV ad display active on startup and during 24x7 kiosk operation.</string>
 </resources>

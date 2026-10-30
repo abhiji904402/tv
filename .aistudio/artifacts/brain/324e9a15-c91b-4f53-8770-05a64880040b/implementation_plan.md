@@ -1,137 +1,102 @@
-# PulseCast Signage & TV Ad Network
+# Minimal Status Dot, Green Star Trigger, Built-In PIN Keypad, Bottom-Nav Admin Hub & Web Video Rotation Controls
 
-A production-grade Digital Signage and TV Ad Network suite delivered as a dual-mode Android application (**TV Display Client** + **Cloud CMS Dashboard**) powered by **Jetpack Compose**, **Media3 ExoPlayer**, and **Firebase Firestore**. It features gapless offline-first video looping, a 3.5-second buffering watchdog, 6-digit screen pairing, granular zone permissions, and an A/B Over-the-Air (OTA) software update engine with automatic rollback.
+This update replaces the large top status banner on the Android TV player with a clean, ultra-minimal **Status Dot (Green when live synced, White/Red when offline)** + **Small Green Star (`★`) button** in the top-right corner. Tapping the star opens a **Built-In On-Screen Password Keypad** (no OS keyboard needed), which unlocks a **Full-Screen Admin Hub** featuring a top **Back button** and a **Bottom Navigation Bar** to switch effortlessly between pages, while upgrading both the Android client and the Web CMS Dashboard with per-device **Video Rotation (`+90°`, `-90°`, `0°`, `180°`, `270°`)** and **Scale Modes (`Scale to Fit`, `Full Screen`, `Zoom`)**.
 
 ## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> Please review the confirmed product decisions below—including the newly added **Over-the-Air (OTA) Software Update & Rollback** architecture—and click **Proceed** when ready to provision Firebase and build the application.
-
-- **Confirmed Decision 1 (Dual-Mode Workspace Architecture)**: The Android app provides both the **TV Display Client** (Kiosk Player) and the **CMS Controller Dashboard** within a unified application, plus a companion Node.js/Vercel serverless reference API for external web deployments.
-- **Confirmed Decision 2 (Video Ingestion & Chunked Pipeline)**: Videos can be ingested via the local device media picker or direct stream URLs, processed through a **600KB chunked ingestion pipeline** into local device storage (`filesDir/videos`) for verified offline playback (`✔`), and synchronized across connected screens via **Firebase Firestore** (`cms_global/live_state`).
-- **Confirmed Decision 3 (Kiosk Security & Admin Unlock)**: While looping ads in Kiosk Mode, the **Protected Admin Settings Panel** is hidden from viewers and unlocked only via a **5-tap corner gesture** (top-right) or **TV Remote Menu key**, guarded by a configurable **4-digit Admin PIN** (default `1234`).
-- **Decision 4 (OTA Software Update & A/B Rollback Engine)**: Administrators can publish new client versions in the CMS Dashboard; display clients automatically detect, download, verify (SHA-256), and stage updates in the background using an **A/B slot architecture**, automatically rolling back to the previous verified version if post-update health checks or installation fail.
+> **Confirmed Design & UX Decisions:**
+> - **Confirmed Decision 1 (Minimal Top-Right Indicator)**: Replaced the wide text pill and old Admin button with a compact top-right indicator containing a live connection dot (**Green** when connected & syncing every 2s with Web CMS, **White** with subtle red ring when disconnected) and a **Small Green Star (`★`)** trigger.
+> - **Confirmed Decision 2 (Built-In Password Keypad)**: Tapping the green star opens an in-app password dialog with a built-in numeric/alphanumeric keypad (`0–9`, `Clear`, `⌫ Backspace`, `Unlock`) so you can enter the password (`1234` default) directly inside the app without relying on an external or system keyboard.
+> - **Confirmed Decision 3 (Full-Screen Admin Hub with Top Back Button & Bottom Navigation Bar)**: Unlocking opens a clean, user-friendly full-screen Admin Hub with a prominent **`← Back to Player`** button in the top header and a **Material 3 Bottom Navigation Bar** (`NavigationBar` with `windowInsetsPadding(WindowInsets.navigationBars)`) to switch between **5 dedicated pages**:
+>   1. **Pair & Sync** (6-digit pairing code, 2s live sync status, server URL)
+>   2. **Videos** (Cloud videos with **Download Offline View** & **Play Offline** buttons)
+>   3. **Display & Rotate** (`LANDSCAPE` / `PORTRAIT`, **Rotate Video `+90°` / `-90°` / `0°` / `180°` / `270°`**, **Scale to Fit** / **Full Screen** / **Zoom**, Audio Mute, and **Save Settings**)
+>   4. **24x7 Boot** (Default HOME Launcher, Device Admin 24x7 Lock, Accessibility 24x7 Guard, System Overlay, 24x7 Battery)
+>   5. **OTA & Logs** (A/B Partition OTA status, rollback, and live logs)
+> - **Confirmed Decision 4 (Web Dashboard Per-Device Video Rotation & Scale Controls)**: Updated the Web CMS Dashboard (`index.html` & `/api/index.js`) so each connected TV card in the **Connected Android TV Screens** section includes dedicated controls for **Rotate Video (`-90°`, `+90°`, `0°`, `90°`, `180°`, `270°`)**, **Scale to Fit (`FIT`)**, **Full Screen (`FILL`)**, and **Screen Orientation (`LANDSCAPE` / `PORTRAIT`)**, syncing in real time within 2 seconds.
 
 ---
 
 ## 1. Overview & Core Concept
 
-- **What It Does**: Transforms any Android TV, tablet, or digital display into a resilient, cloud-managed advertising screen while giving network operators a real-time command center to upload ads, manage multi-zone playlists, rotate/scale screens remotely, and push OTA software updates with zero-downtime rollback safety.
-- **Target Audience / Persona**: Retail store operators, DOOH (Digital Out-of-Home) ad network administrators, hospitality venues, and enterprise IT teams managing fleets of unmanned displays.
-- **Key Value**: Eliminates black screens and frozen streams through local offline caching and a 3.5-second watchdog, while providing instant fleet control (orientation, mute, playlists, zone permissions, and OTA updates) from a single dark-mode dashboard.
+- **What It Does**: Keeps the live video playback screen 100% unobstructed except for a tiny top-right status dot and green star icon (`★`), provides a self-contained in-app keypad for password entry, presents all device settings in a clean bottom-navigated Admin Hub with a top Back button, and adds full video rotation (`+90°` / `-90°`) and scale (`Scale to Fit` / `Full Screen`) controls to every device card on the Web CMS Dashboard.
+- **Target Audience / Persona**: Digital signage operators managing Android TV screens in portrait or landscape who want an unobtrusive player screen, effortless remote/touch password entry, and complete video rotation/scaling control from both the TV and Web Dashboard.
+- **Key Value**: Eliminates visual clutter on the signage display, removes OS keyboard popups during password entry, makes Android settings navigation simple and frustration-free in both Portrait and Landscape, and lets operators fix sideways or stretched videos remotely with a single click (`+90°`, `-90°`, `Scale to Fit`, `Full Screen`).
 
 ---
 
 ## 2. User Experience & Visual Design
 
-### Key User Flows
-1. **Authentication & Role Selection**:
-   - Users sign in securely with **Google Sign-In** (via Jetpack Credential Manager) and select or switch between **TV Display Client Mode** and **CMS Dashboard Mode**.
-2. **6-Digit Device Pairing & Live Sync**:
-   - An unpaired TV screen generates a high-contrast **6-Digit Pairing Code** with a 2.5-second heartbeat loop.
-   - In the **CMS Dashboard**, the operator enters the 6-digit code, assigns the screen to a **Playback Zone** (e.g., *Main Lobby*, *Storefront Window*, *Food Court*), and pairs it instantly.
-3. **Chunked Video Upload & Playlist Publishing**:
-   - The playlist starts completely empty (no pre-loaded demo videos).
-   - Operators import a video file from the device or enter a direct MP4/HLS stream URL. The uploader processes the media in **600KB chunks** with real-time progress telemetry, caches it locally, and updates `cms_global/live_state` in Firestore.
-   - Display clients download new playlist items to persistent storage and display a **Green Checkmark (`✔`)** badge once verified for offline playback.
-4. **Kiosk Playback, Orientation & Watchdog Recovery**:
-   - Media3 ExoPlayer loops the playlist gaplessly (`REPEAT_MODE_ALL`).
-   - Remote CMS commands immediately adjust **Orientation** (`Landscape`, `Portrait`, `90°`, `180°`, `270°`), **Scale Mode** (`Fill`, `Fit`, `Zoom`), and **Audio Mute** without restarting playback.
-   - If a remote stream stalls for **>3.5 seconds** or throws an `IOException`/HTTP 404, the **Buffering Watchdog** logs a diagnostic event and seamlessly switches to the locally cached copy or verified backup stream.
-5. **Hidden 5-Tap Admin Panel**:
-   - Tapping the top-right corner 5 times within 3 seconds (or pressing the TV remote Menu button) opens the **Admin PIN Modal**.
-   - Entering the PIN unlocks the **Admin Settings Panel**, exposing the **Live Diagnostic Log Viewer**, **Local Cache Manager**, **Kiosk Lock Toggle**, **Orientation Overrides**, **OTA Update Status & Manual Rollback**, and **Switch to CMS Dashboard**.
-6. **OTA Software Update & Automatic Rollback**:
-   - In the **CMS OTA Release Center**, admins publish a new release (e.g., `v1.2.0`, build `3`) via APK/bundle picker or release URL, complete with target zones, release notes, and an optional **Simulate Faulty Update** toggle to test rollback resilience.
-   - The **TV Display Client** detects the update during its background sync, downloads the package in chunks, verifies the **SHA-256 checksum**, backs up the current version in **Slot A**, and activates the new release in **Slot B**.
-   - A **Post-Update Boot & Playback Watchdog** verifies stability; if package verification, installation, or startup health fails, the client automatically executes an **Instant Rollback** to Slot A and reports the rollback telemetry to the CMS Dashboard.
+- **Key User Flows**:
+  1. **Unobtrusive Playback Screen**:
+     - While playing video or in standby, only a tiny pill in the top-right corner is visible: a **Status Dot** (**Green `#10B981`** when connected and syncing live with Web CMS; **White `#F8FAFC`** when disconnected) next to a **Small Green Star (`★`)** icon button.
+  2. **Built-In Password Keypad Modal**:
+     - Tapping the green star (`★`) opens a sleek modal with masked PIN dots (`● ● ● ●`) and an **in-built 3x4 keypad** (`1–9`, `Clear`, `0`, `⌫`) plus an `Unlock Admin` button and `Cancel` button. Typing the 4-digit PIN (`1234` default) auto-unlocks or unlocks on tap without opening the Android system keyboard.
+  3. **Full-Screen Admin Hub with Top Back Button & Bottom Navigation Bar**:
+     - Once unlocked, the Admin Hub opens with:
+       - **Top Bar**: Prominent **`← Back`** button to return immediately to video playback, live connection dot (Green/White), device pairing code badge, and a quick `Sync Now` action.
+       - **Center Content Area**: Clean, spacious cards for the selected page.
+       - **Bottom Navigation Bar**: 5 clear bottom tabs (`Pair`, `Videos`, `Rotate`, `24x7 Perms`, `OTA`) so switching pages takes a single tap.
+  4. **Web CMS Dashboard Device Controls**:
+     - In each device card on the Web CMS Dashboard, operators can click **`Rotate -90°`**, **`Rotate +90°`**, **`0°` / `90°` / `180°` / `270°`**, **`Scale to Fit`**, or **`Full Screen`**, and the Android TV applies the video rotation and scaling within 2 seconds.
 
-### Visual Identity & Theme
-- **Aesthetic Direction**: **Broadcast Mission Control (Industrial Dark UI)** — engineered for zero-glare control rooms and 10-foot TV legibility, combining obsidian slate surfaces, high-contrast status indicators, and monospaced telemetry readouts.
-- **Color Palette & Mood**:
-  - `--background`: `#090D16` (Deep Obsidian Broadcast Canvas)
-  - `--surface`: `#111827` (Elevated Control Deck Card)
-  - `--surface-variant`: `#1E293B` (Interactive Panel / Module Header)
-  - `--primary`: `#06B6D4` (Electric Cyan — Active Sync, Primary Actions & Focus Rings)
-  - `--secondary`: `#6366F1` (Indigo — Zone Badges & OTA Release Tags)
-  - `--accent-success`: `#10B981` (Signal Green — Connected Dot, Offline Cached `✔`, Healthy Slot)
-  - `--accent-warning`: `#F59E0B` (Amber — Buffering Watchdog / Staged OTA Download)
-  - `--accent-danger`: `#EF4444` (Crimson — Offline Device Dot, Rollback Triggered, Stream Error)
-- **Typography & Hierarchy**:
-  - **Display & Headings**: `Space Grotesk` (bundled locally via `font-util`) for crisp geometric headers, 6-digit pairing codes, and dashboard metrics.
-  - **Telemetry, Logs & Timestamps**: `JetBrains Mono` (bundled locally via `font-util`) for diagnostic logs, chunk progress, SHA-256 hashes, and 2.5s heartbeat counters.
-  - **Body & Controls**: `Inter` for clean legibility across compact phones, tablets, and widescreen displays.
-- **Component Styling & Layout**:
-  - Adaptive Material 3 layout supporting both handheld CMS operation and widescreen/tablet split-pane views (**Live Preview Monitor** alongside **Playlist & Fleet Controls**).
-  - Status pills with pulsing green/red telemetry dots, tactile rotation/scale selector chips, and non-blocking instant sync toasts.
+- **Visual Identity & Theme**:
+  - *Aesthetic Direction*: Broadcast Obsidian Dark (`#090D16` background, `#111827` cards) with crisp `#10B981` Signal Green and `#00E5FF` Electric Cyan accents.
+  - *Component Styling & Layout*: Material 3 `Scaffold` with top header bar and bottom `NavigationBar` respecting `WindowInsets.safeDrawing` and `WindowInsets.navigationBars`.
 
 ---
 
 ## 3. Key Product Decisions & Trade-Offs
 
-- **Decision 1: Unified Dual-Mode Android App + Firestore Real-Time Core**
-  - *Chosen Approach*: Embed both the **TV Display Client** and the **Web-style CMS Dashboard** directly inside the Android app backed by Firebase Firestore (`cms_global/live_state` plus user-scoped collections), while also generating the companion Node.js/Vercel API reference files.
-  - *Why*: Lets you test and operate the entire signage network immediately inside the Android emulator—uploading videos, toggling rotation/mute, managing zone permissions, and triggering OTA updates—with live cloud persistence.
-- **Decision 2: 600KB Chunked Ingestion & Local File Caching**
-  - *Chosen Approach*: Read selected local videos or remote streams in 600KB buffer blocks, writing verified files to `context.filesDir/signage_videos/` and tracking chunk progress in real time.
-  - *Why*: Prevents Out-Of-Memory (OOM) crashes on large video creatives and guarantees uninterrupted local playback (`✔`) even if the network drops completely.
-- **Decision 3: A/B Slot OTA Update & Automatic Rollback Engine**
-  - *Chosen Approach*: Implement a dual-slot OTA manager (`Slot A: Active/Known-Good`, `Slot B: Staged Update`) with SHA-256 verification, Android `PackageInstaller` session support for APK files, and an automated health-check watchdog that rolls back to the previous slot if an update fails verification or boot health checks.
-  - *Why*: Unmanned digital signage screens cannot require a technician visit when a bad update is pushed; automated A/B rollback guarantees fleet self-healing.
+- **Decision 1: Minimal Top-Right Status Dot + Green Star (`★`) vs. Wide Status Banner**
+  - *Chosen Approach*: A compact 36dp-tall pill in the top-right corner containing only the status dot (Green = live connected, White = offline) and the green star icon (`★`), removing the left-edge tab and wide text banner.
+  - *Why*: Digital signage screens should display content cleanly without large HUD banners covering the video or wrapping awkwardly in Portrait mode.
+- **Decision 2: Built-In On-Screen Keypad vs. System `OutlinedTextField` Keyboard**
+  - *Chosen Approach*: Custom Compose keypad grid inside the password modal (also supporting physical TV remote number keys `0–9`).
+  - *Why*: System keyboards on Android TV / kiosk displays often cover the screen or fail to appear in locked launcher mode; a built-in keypad works reliably everywhere with touch, mouse, or TV remote.
+- **Decision 3: Separate `videoRotateDegrees` (`0° / 90° / 180° / 270°` + `+90° / -90°`) from `screenOrientation` (`LANDSCAPE / PORTRAIT`)**
+  - *Chosen Approach*: Store and sync `videoRotateDegrees` independently alongside `orientation` and `scaleMode` (`FIT` = Scale to Fit, `FILL` = Full Screen, `ZOOM` = Zoom Crop) in both the Android client and the Web CMS backend (`/api/device-control` & `/api/heartbeat`).
+  - *Why*: Allows rotating the video stream itself (`+90°` or `-90°`) inside any screen orientation and scaling it to fit or fill full-screen without distortion.
 
 ---
 
 ## 4. Technical Architecture & Data Strategy *(Technical Reference)*
 
-### Architecture & Component Diagram
 ```
-┌────────────────────────────────────────────────────────────────────────────┐
-│                   PULSECAST DIGITAL SIGNAGE APPLICATION                    │
-│                  (Google Sign-In Gate via CredentialManager)               │
-└───────────────────┬────────────────────────────────────┬───────────────────┘
-                    │                                    │
-                    ▼                                    ▼
-┌───────────────────────────────────────┐ ┌──────────────────────────────────┐
-│      TV DISPLAY CLIENT (KIOSK)        │ │       CMS DASHBOARD VIEW         │
-│  ┌─────────────────────────────────┐  │ │  ┌────────────────────────────┐  │
-│  │ Media3 ExoPlayer Engine         │  │ │  │ Live Preview Monitor       │  │
-│  │ • RepeatMode.ALL (Gapless)      │  │ │  │ • Orientation / Mute Sync  │  │
-│  │ • 3.5s Buffering Watchdog       │  │ │  └────────────────────────────┘  │
-│  │ • Rotation (0/90/180/270) & Zoom│  │ │  ┌────────────────────────────┐  │
-│  └───────────────┬─────────────────┘  │ │  │ 600KB Chunked Uploader &   │  │
-│                  ▼                    │ │  │ Playlist Manager (Empty 0) │  │
-│  ┌─────────────────────────────────┐  │ │  └────────────────────────────┘  │
-│  │ Offline Cache & 2.5s Sync Loop  │  │ │  ┌────────────────────────────┐  │
-│  │ • Local Storage (✔ Verified)    │  │ │  │ 6-Digit Pairing & Granular │  │
-│  │ • 6-Digit Pairing Screen        │  │ │  │ Zone Permissions Manager   │  │
-│  └───────────────┬─────────────────┘  │ │  └────────────────────────────┘  │
-│                  ▼                    │ │  ┌────────────────────────────┐  │
-│  ┌─────────────────────────────────┐  │ │  │ OTA Release & Rollback Hub │  │
-│  │ 5-Tap PIN Admin Settings Panel  │  │ │  │ • Upload Version / SHA-256 │  │
-│  │ • Diagnostic Log Viewer         │  │ │  │ • Fleet Health & Rollbacks │  │
-│  │ • OTA Slot Status & Rollback    │  │ │  └────────────────────────────┘  │
-│  └─────────────────────────────────┘  │ └─────────────────┬────────────────┘
-└───────────────────┬───────────────────┘                   │
-                    │         Real-Time Sync & Polling      │
-                    └───────────────────┬───────────────────┘
-                                        ▼
-┌────────────────────────────────────────────────────────────────────────────┐
-│             FIREBASE FIRESTORE (Custom DB: firestore_database_id)          │
-│  • users/{uid}/cms_state/live_state   (Live Playlist, Rotation, Mute)      │
-│  • users/{uid}/devices/{deviceId}     (6-Digit Code, Heartbeat, OTA State) │
-│  • users/{uid}/zones/{zoneId}         (Playback Zones & Operator Roles)    │
-│  • users/{uid}/ota_releases/{relId}   (OTA Versions, Checksums, Rollback)  │
-└────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                 ANDROID TV DISPLAY CLIENT (Full-Screen Video)                │
+│                                                                              │
+│  Top-Right Corner:  [ ● Status Dot (Green=Live / White=Offline) | ★ Star ]   │
+└──────────────────────────────────────┬───────────────────────────────────────┘
+                                       │ Tap ★ Star
+                                       ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                 BUILT-IN PASSWORD KEYPAD MODAL (No OS Keyboard)              │
+│         [ ● ● ● ● ]  +  Built-In 1-9 / 0 / Clear / ⌫ Keypad + [Back]         │
+└──────────────────────────────────────┬───────────────────────────────────────┘
+                                       │ PIN Verified (1234)
+                                       ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│               FULL-SCREEN ADMIN HUB (Top Back Button + Bottom Nav)           │
+│  Top Header:  [ ← Back to Player ]   ● Live Sync (Code: 127489)  [Sync Now]  │
+│  --------------------------------------------------------------------------  │
+│  Page Content:                                                               │
+│   • Page 1 (Pair & Sync): 6-Digit Code, TV Name, Server URL, 2s Live Sync    │
+│   • Page 2 (Videos): Cloud Videos + [Download Offline View] + [Play Offline] │
+│   • Page 3 (Rotate & Scale): Landscape/Portrait, Video Rotate (-90° / +90° / │
+│     0° / 90° / 180° / 270°), Scale to Fit / Full Screen / Zoom, [Save]       │
+│   • Page 4 (24x7 Boot): Default HOME Launcher, Device Admin, Accessibility,  │
+│     System Overlay, Unrestricted Battery                                     │
+│   • Page 5 (OTA & Logs): A/B Slot Status, Rollback, Live Diagnostic Logs     │
+│  --------------------------------------------------------------------------  │
+│  Bottom Nav Bar: [ 🔗 Pair ] [ 🎬 Videos ] [ 🔄 Rotate ] [ 🛡 24x7 ] [ ⚡ OTA ] │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Data Model & State
-- **`LiveState` (`users/{uid}/cms_state/live_state`)**: Stores global/zone playback configuration including `orientation` (`LANDSCAPE`, `PORTRAIT`, `ROTATE_90`, `ROTATE_180`, `ROTATE_270`), `scaleMode` (`FILL`, `FIT`, `ZOOM`), `isMuted`, `kioskLocked`, `activeZoneId`, `playlist` (list of `VideoItem` objects with `id`, `title`, `sourceUrl`, `localFileName`, `chunkCount`, `sizeBytes`, `zoneId`, `backupUrl`), and `updatedAt`.
-- **`SignageDevice` (`users/{uid}/devices/{deviceId}`)**: Tracks each display unit with `pairingCode` (6 digits), `deviceName`, `zoneId`, `isPaired`, `lastHeartbeatMs`, `currentVideoTitle`, `cachedVideoIds`, `installedVersionName`, `installedVersionCode`, `otaStatus` (`UP_TO_DATE`, `DOWNLOADING`, `VERIFYING`, `INSTALLED`, `ROLLED_BACK`), and `previousSlotVersion`.
-- **`PlaybackZone` (`users/{uid}/zones/{zoneId}`)**: Defines zone name, allowed operator emails/roles (`ADMIN`, `ZONE_MANAGER`, `VIEWER`), and zone-specific overrides.
-- **`OtaRelease` (`users/{uid}/ota_releases/{releaseId}`)**: Stores `versionName`, `versionCode`, `releaseNotes`, `targetZoneId`, `packageUri`, `sha256Checksum`, `chunkCount`, `simulateCorruptHeader` (for deterministic rollback verification), `isMandatory`, and `createdAt`.
-
-### Interactive Component & State Mapping
-- **600KB Chunked Video & OTA Uploader**: Reads selected URI or stream in `614,400`-byte chunks, updating a determinate progress bar (`chunksProcessed / totalChunks`), computing a SHA-256 digest, persisting to local storage, and committing metadata to Firestore with an instant sync toast.
-- **3.5s Buffering Watchdog & Backup Fallback**: A coroutine monitor observes `Player.STATE_BUFFERING`. If buffering exceeds `3500ms` or `onPlayerError` fires (`IOException` / `HttpDataSource.InvalidResponseCodeException` 404), the player logs the failure to the diagnostic ring buffer and switches the media item to its locally cached file or verified backup stream without interrupting the loop.
-- **5-Tap Corner Gesture & PIN Verification**: Tracks tap timestamps in the top-right 72dp hit zone; 5 taps within 3000ms opens the numeric keypad modal. Validating the PIN (`1234` default, customizable in settings) opens the tabbed Admin Settings overlay.
-- **Background OTA & Rollback State Machine**: Polls `ota_releases` for `versionCode > currentVersionCode`. Automatically downloads the package in the background, snapshots the current configuration/version into `Slot A (Backup)`, verifies the package integrity and startup health check in `Slot B`, and triggers an automatic rollback to `Slot A` with a high-priority diagnostic log and CMS alert if verification fails.
+- **Interactive Component & State Mapping**:
+  - **Top-Right Minimal Indicator**: Renders a `10.dp` circle (`SignalGreen` `#10B981` when `isWebCmsConnected == true`, `Color.White` `#F8FAFC` when `false`) paired with a `SignalGreen` Star icon (`Icons.Default.Star`). Tapping opens the Built-In Keypad PIN dialog (`viewModel.openStarAdminPrompt()`).
+  - **Built-In Keypad Dialog**: Maintains `enteredPin` state in Compose; tapping `0–9` appends digits (auto-verifying at 4 digits or when tapping `Unlock`), `⌫` removes the last digit, `Clear` resets, and `Back / Cancel` closes the dialog.
+  - **Admin Hub (`AdminFullScreenHub`)**: Uses a `Scaffold` with a top bar containing a clear `← Back` button (`onCloseAdmin`) and a bottom `NavigationBar` with 5 `NavigationBarItem` entries.
+  - **Video Rotation (`+90°` / `-90°`) & Scale (`Scale to Fit` / `Full Screen`)**:
+    - Added `rotateVideoByDelta(-90)` and `rotateVideoByDelta(+90)` helpers in `SignageViewModel` and on each device card in the Web CMS Dashboard (`index.html` & `/api/index.js`), syncing `videoRotateDegrees` (`0`, `90`, `180`, `270`), `orientation` (`LANDSCAPE`, `PORTRAIT`), and `scaleMode` (`FIT` = Scale to Fit, `FILL` = Full Screen, `ZOOM` = Zoom).

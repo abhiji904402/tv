@@ -78,10 +78,15 @@ fun PulseCastTvClientApp() {
 
     val cmsServerUrl by viewModel.cmsServerUrl.collectAsStateWithLifecycle()
     val isWebCmsConnected by viewModel.isWebCmsConnected.collectAsStateWithLifecycle()
+    val isPairedWithCms by viewModel.isPairedWithCms.collectAsStateWithLifecycle()
     val deviceName by viewModel.deviceName.collectAsStateWithLifecycle()
     val assignedVideoId by viewModel.assignedVideoId.collectAsStateWithLifecycle()
+    val screenOrientation by viewModel.screenOrientation.collectAsStateWithLifecycle()
+    val videoRotateDegrees by viewModel.videoRotateDegrees.collectAsStateWithLifecycle()
     val liveState by viewModel.liveState.collectAsStateWithLifecycle()
     val videos by viewModel.videos.collectAsStateWithLifecycle()
+    val allCloudVideos by viewModel.allCloudVideos.collectAsStateWithLifecycle()
+    val forcedOfflineVideoId by viewModel.forcedOfflineVideoId.collectAsStateWithLifecycle()
     val localDeviceId by viewModel.localDeviceId.collectAsStateWithLifecycle()
     val localPairingCode by viewModel.localPairingCode.collectAsStateWithLifecycle()
     val otaSlotState by viewModel.otaSlotState.collectAsStateWithLifecycle()
@@ -93,6 +98,7 @@ fun PulseCastTvClientApp() {
     val lastSyncCycleCount by viewModel.lastSyncCycleCount.collectAsStateWithLifecycle()
     val isPinDialogVisible by viewModel.isPinDialogVisible.collectAsStateWithLifecycle()
     val isAdminPanelOpen by viewModel.isAdminPanelOpen.collectAsStateWithLifecycle()
+    val selectedSidebarTab by viewModel.selectedSidebarTab.collectAsStateWithLifecycle()
     val pinError by viewModel.pinError.collectAsStateWithLifecycle()
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -101,10 +107,15 @@ fun PulseCastTvClientApp() {
             localManager = localManager,
             cmsServerUrl = cmsServerUrl,
             isWebCmsConnected = isWebCmsConnected,
+            isPairedWithCms = isPairedWithCms,
             deviceName = deviceName,
             assignedVideoId = assignedVideoId,
+            screenOrientation = screenOrientation,
+            videoRotateDegrees = videoRotateDegrees,
             liveState = liveState,
             videos = videos,
+            allCloudVideos = allCloudVideos,
+            forcedOfflineVideoId = forcedOfflineVideoId,
             pairingCode = localPairingCode,
             deviceId = localDeviceId,
             otaSlotState = otaSlotState,
@@ -115,6 +126,7 @@ fun PulseCastTvClientApp() {
             lastSyncCycleCount = lastSyncCycleCount,
             isPinDialogVisible = isPinDialogVisible,
             isAdminPanelOpen = isAdminPanelOpen,
+            selectedSidebarTab = selectedSidebarTab,
             pinError = pinError
         )
 

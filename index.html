@@ -171,20 +171,20 @@
           </div>
         </div>
 
-        <!-- Global Default Orientation & Scale Buttons -->
+        <!-- Global Default Orientation, Video Rotate & Scale Buttons -->
         <div class="mt-4 space-y-3">
-          <div class="text-xs font-mono-code text-slate-400">GLOBAL FLEET ORIENTATION & SCALE</div>
+          <div class="text-xs font-mono-code text-slate-400">GLOBAL FLEET ORIENTATION, VIDEO ROTATION & SCALE</div>
           <div class="flex flex-wrap gap-1.5" id="globalOrientationBtns">
-            <button onclick="updateGlobalState({orientation:'LANDSCAPE'})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">LANDSCAPE (0°)</button>
-            <button onclick="updateGlobalState({orientation:'PORTRAIT'})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">PORTRAIT (90°)</button>
-            <button onclick="updateGlobalState({orientation:'ROTATE_180'})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">180° INVERT</button>
-            <button onclick="updateGlobalState({orientation:'ROTATE_270'})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">270° PORTRAIT</button>
+            <button onclick="updateGlobalState({orientation:'LANDSCAPE', videoRotateDegrees:0})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">LANDSCAPE</button>
+            <button onclick="updateGlobalState({orientation:'PORTRAIT', videoRotateDegrees:0})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">PORTRAIT</button>
+            <button onclick="updateGlobalState({rotateDelta: -90})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 font-semibold">⟲ Rotate -90°</button>
+            <button onclick="updateGlobalState({rotateDelta: 90})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 font-semibold">⟳ Rotate +90°</button>
           </div>
           <div class="flex flex-wrap items-center justify-between gap-2 pt-1">
-            <div class="flex gap-1.5">
-              <button onclick="updateGlobalState({scaleMode:'FILL'})" class="px-2.5 py-1 rounded-lg text-xs font-mono-code bg-slate-800 text-slate-200 border border-slate-700">Scale: FILL</button>
-              <button onclick="updateGlobalState({scaleMode:'FIT'})" class="px-2.5 py-1 rounded-lg text-xs font-mono-code bg-slate-800 text-slate-200 border border-slate-700">Scale: FIT</button>
-              <button onclick="updateGlobalState({scaleMode:'ZOOM'})" class="px-2.5 py-1 rounded-lg text-xs font-mono-code bg-slate-800 text-slate-200 border border-slate-700">Scale: ZOOM</button>
+            <div class="flex flex-wrap gap-1.5">
+              <button onclick="updateGlobalState({scaleMode:'FIT'})" class="px-2.5 py-1 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">Scale to Fit (FIT)</button>
+              <button onclick="updateGlobalState({scaleMode:'FILL'})" class="px-2.5 py-1 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">Full Screen (FILL)</button>
+              <button onclick="updateGlobalState({scaleMode:'ZOOM'})" class="px-2.5 py-1 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">Zoom Crop (ZOOM)</button>
             </div>
             <button id="globalMuteBtn" onclick="toggleGlobalMute()" class="px-3 py-1 rounded-lg text-xs font-mono-code bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
               🔊 Audio Live
@@ -243,7 +243,7 @@
 
   <script>
     let currentState = {
-      liveState: { orientation: "LANDSCAPE", scaleMode: "FILL", isMuted: false, kioskLocked: true },
+      liveState: { orientation: "LANDSCAPE", videoRotateDegrees: 0, scaleMode: "FILL", isMuted: false, kioskLocked: true },
       videos: [],
       devices: [],
       zones: [],
@@ -287,7 +287,8 @@
       document.getElementById("deviceCountBadge").textContent = devices.length;
       document.getElementById("playlistCountBadge").textContent = videos.length;
       document.getElementById("otaVersionBadge").textContent = `v${ls.activeOtaVersionName || "1.0.0"}`;
-      document.getElementById("livePreviewBadge").textContent = `${ls.orientation || "LANDSCAPE"} • ${ls.scaleMode || "FILL"}`;
+      const globalRot = ls.videoRotateDegrees !== undefined ? ls.videoRotateDegrees : 0;
+      document.getElementById("livePreviewBadge").textContent = `${ls.orientation || "LANDSCAPE"} • ${globalRot}° • ${ls.scaleMode || "FILL"}`;
 
       const muteBtn = document.getElementById("globalMuteBtn");
       muteBtn.textContent = ls.isMuted ? "🔇 Audio Muted" : "🔊 Audio Live";
@@ -314,9 +315,9 @@
           videoEl.src = activeUrl;
           videoEl.play().catch(() => {});
         }
-        const rot = ls.orientation === "PORTRAIT" || ls.orientation === "ROTATE_90" ? 90
-          : ls.orientation === "ROTATE_180" ? 180
-          : ls.orientation === "ROTATE_270" ? 270 : 0;
+        const rot = ls.videoRotateDegrees !== undefined
+          ? Number(ls.videoRotateDegrees)
+          : (ls.orientation === "ROTATE_90" ? 90 : ls.orientation === "ROTATE_180" ? 180 : ls.orientation === "ROTATE_270" ? 270 : 0);
         videoEl.style.transform = `rotate(${rot}deg)`;
         videoEl.style.objectFit = ls.scaleMode === "FIT" ? "contain" : "cover";
       } else {
@@ -325,14 +326,14 @@
         lastPreviewUrl = "";
       }
 
-      // Render Per-Device Cards with individual Orientation & Video Selectors
+      // Render Per-Device Cards with individual Screen Orientation, Video Rotate (+90°/-90°/0°/90°/180°/270°), Scale to Fit / Full Screen & Video Selectors
       const devContainer = document.getElementById("devicesContainer");
       if (devices.length === 0) {
-        devContainer.innerHTML = `<div class="text-center py-8 text-slate-500 text-sm">No Android TV screens paired yet. Open the Android TV app (it auto-registers within 2.5s) or enter its 6-digit code above.</div>`;
+        devContainer.innerHTML = `<div class="text-center py-8 text-slate-500 text-sm">No Android TV screens paired yet. Open the Android TV app (it auto-registers within 2.0s) or enter its 6-digit code above.</div>`;
       } else {
         devContainer.innerHTML = devices.map(d => {
           const dotClass = d.isOnline ? "bg-emerald-400 pulse-dot" : "bg-rose-500";
-          const statusText = d.isOnline ? "CONNECTED" : "OFFLINE";
+          const statusText = d.isOnline ? "CONNECTED (2s SYNC)" : "OFFLINE";
           const statusBadge = d.isOnline
             ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
             : "bg-rose-500/15 text-rose-300 border-rose-500/30";
@@ -340,10 +341,27 @@
           const videoOptions = `<option value="ALL" ${(!d.assignedVideoId || d.assignedVideoId === "ALL") ? "selected" : ""}>Loop All Playlist Videos (${videos.length})</option>` +
             videos.map(v => `<option value="${v.id}" ${d.assignedVideoId === v.id ? "selected" : ""}>Play Only: ${v.title}</option>`).join("");
 
-          const orientations = ["LANDSCAPE", "PORTRAIT", "ROTATE_90", "ROTATE_180", "ROTATE_270"];
-          const orientBtns = orientations.map(o => {
-            const active = (d.orientation || "LANDSCAPE") === o;
-            return `<button onclick="controlDevice('${d.id}', {orientation:'${o}'})" class="px-2 py-1 rounded text-[11px] font-mono-code border ${active ? 'bg-cyan-500 text-slate-950 font-bold border-cyan-400' : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-cyan-500/50'}">${o}</button>`;
+          const screenOrient = (d.orientation === "PORTRAIT") ? "PORTRAIT" : "LANDSCAPE";
+          const videoDeg = d.videoRotateDegrees !== undefined ? Number(d.videoRotateDegrees) : 0;
+          const devScale = d.scaleMode || "FILL";
+
+          const screenOrientBtns = ["LANDSCAPE", "PORTRAIT"].map(o => {
+            const active = screenOrient === o;
+            return `<button onclick="controlDevice('${d.id}', {orientation:'${o}'})" class="px-2.5 py-1 rounded text-[11px] font-mono-code border ${active ? 'bg-cyan-500 text-slate-950 font-bold border-cyan-400' : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-cyan-500/50'}">${o}</button>`;
+          }).join("");
+
+          const angleBtns = [0, 90, 180, 270].map(deg => {
+            const active = videoDeg === deg;
+            return `<button onclick="controlDevice('${d.id}', {videoRotateDegrees:${deg}})" class="px-2 py-1 rounded text-[11px] font-mono-code border ${active ? 'bg-emerald-500 text-slate-950 font-bold border-emerald-400' : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-emerald-500/50'}">${deg}°</button>`;
+          }).join("");
+
+          const scaleBtns = [
+            { mode: "FIT", label: "Scale to Fit" },
+            { mode: "FILL", label: "Full Screen" },
+            { mode: "ZOOM", label: "Zoom" }
+          ].map(s => {
+            const active = devScale === s.mode;
+            return `<button onclick="controlDevice('${d.id}', {scaleMode:'${s.mode}'})" class="px-2.5 py-1 rounded text-[11px] font-mono-code border ${active ? 'bg-indigo-500 text-white font-bold border-indigo-400' : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-indigo-500/50'}">${s.label}</button>`;
           }).join("");
 
           return `
@@ -353,7 +371,7 @@
                   <span class="w-3 h-3 rounded-full ${dotClass}"></span>
                   <div>
                     <div class="font-semibold text-sm text-white">${d.deviceName}</div>
-                    <div class="text-xs font-mono-code text-slate-400">Code: <span class="text-cyan-400 font-bold">${d.pairingCode}</span> • Now Playing: <span class="text-emerald-300">${d.currentVideoTitle || "Standby"}</span> • ✔ Cached: ${d.cachedVideoCount || 0}</div>
+                    <div class="text-xs font-mono-code text-slate-400">Code: <span class="text-cyan-400 font-bold">${d.pairingCode}</span> • Playing: <span class="text-emerald-300">${d.currentVideoTitle || "Standby"}</span> • Rotate: <span class="text-emerald-400 font-bold">${videoDeg}°</span> • Scale: <span class="text-indigo-300 font-bold">${devScale}</span></div>
                   </div>
                 </div>
                 <div class="flex items-center gap-2">
@@ -366,20 +384,33 @@
 
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-800/80">
                 <div>
-                  <label class="block text-[11px] font-mono-code text-slate-400 mb-1">DEVICE ORIENTATION (INDEPENDENT)</label>
-                  <div class="flex flex-wrap gap-1">${orientBtns}</div>
+                  <label class="block text-[11px] font-mono-code text-slate-400 mb-1">1. SCREEN ORIENTATION & SCALE MODE</label>
+                  <div class="flex flex-wrap gap-1.5 items-center">
+                    ${screenOrientBtns}
+                    <span class="text-slate-700">|</span>
+                    ${scaleBtns}
+                  </div>
                 </div>
                 <div>
-                  <label class="block text-[11px] font-mono-code text-slate-400 mb-1">WHICH VIDEO TO PLAY ON THIS TV</label>
-                  <select onchange="controlDevice('${d.id}', {assignedVideoId: this.value})" class="w-full px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-cyan-400">
-                    ${videoOptions}
-                  </select>
+                  <label class="block text-[11px] font-mono-code text-slate-400 mb-1">2. ROTATE VIDEO (+90° / -90° / ANGLE)</label>
+                  <div class="flex flex-wrap gap-1 items-center">
+                    <button onclick="controlDevice('${d.id}', {rotateDelta: -90})" class="px-2.5 py-1 rounded text-[11px] font-mono-code font-bold bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40">⟲ -90°</button>
+                    <button onclick="controlDevice('${d.id}', {rotateDelta: 90})" class="px-2.5 py-1 rounded text-[11px] font-mono-code font-bold bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40">⟳ +90°</button>
+                    ${angleBtns}
+                  </div>
                 </div>
+              </div>
+
+              <div class="pt-1">
+                <label class="block text-[11px] font-mono-code text-slate-400 mb-1">3. WHICH VIDEO TO PLAY ON THIS TV</label>
+                <select onchange="controlDevice('${d.id}', {assignedVideoId: this.value})" class="w-full px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-cyan-400">
+                  ${videoOptions}
+                </select>
               </div>
 
               <div class="flex items-center justify-between text-[11px] font-mono-code text-slate-500 pt-1">
                 <span>OTA Firmware: v${d.installedVersionName || '1.0.0'} (${d.otaStatus || 'UP_TO_DATE'})</span>
-                <span>Backup Slot: v${d.previousSlotVersionName || '1.0.0'}</span>
+                <span>✔ Offline Cached: ${d.cachedVideoCount || 0} video(s)</span>
               </div>
             </div>
           `;
@@ -563,7 +594,7 @@
     }
 
     fetchLiveState();
-    setInterval(fetchLiveState, 2500);
+    setInterval(fetchLiveState, 2000);
   </script>
 </body>
 </html>

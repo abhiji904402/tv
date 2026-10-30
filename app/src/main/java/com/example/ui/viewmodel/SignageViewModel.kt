@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.ChunkedStorageAndOtaManager
 import com.example.data.local.OtaSlotState
+import com.example.data.local.SavedDisplaySettings
 import com.example.data.model.DiagnosticLogEntry
 import com.example.data.model.LiveState
 import com.example.data.model.LogLevel
@@ -25,10 +26,12 @@ import java.util.UUID
 
 data class ChunkTransferTelemetry(
     val isActive: Boolean = false,
+    val videoId: String = "",
     val label: String = "",
     val currentChunk: Int = 0,
     val totalChunks: Int = 0,
-    val bytesTransferred: Long = 0L
+    val bytesTransferred: Long = 0L,
+    val progressPercent: Int = 0
 )
 
 class SignageViewModel(
@@ -43,11 +46,16 @@ class SignageViewModel(
             "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4"
     }
 
+    private val initialSavedSettings = localManager.getSavedDisplaySettings()
+
     private val _cmsServerUrl = MutableStateFlow(localManager.getCmsServerUrl())
     val cmsServerUrl: StateFlow<String> = _cmsServerUrl.asStateFlow()
 
     private val _isWebCmsConnected = MutableStateFlow(false)
     val isWebCmsConnected: StateFlow<Boolean> = _isWebCmsConnected.asStateFlow()
+
+    private val _isPairedWithCms = MutableStateFlow(true)
+    val isPairedWithCms: StateFlow<Boolean> = _isPairedWithCms.asStateFlow()
 
     private val _localDeviceId = MutableStateFlow(localManager.getOrCreateDeviceId())
     val localDeviceId: StateFlow<String> = _localDeviceId.asStateFlow()
@@ -61,11 +69,32 @@ class SignageViewModel(
     private val _assignedVideoId = MutableStateFlow("ALL")
     val assignedVideoId: StateFlow<String> = _assignedVideoId.asStateFlow()
 
-    private val _liveState = MutableStateFlow(LiveState(userId = "vercel_web_cms"))
+    // Display, Screen Orientation & Video Rotation States (Initialized from Saved Settings)
+    private val _screenOrientation = MutableStateFlow(initialSavedSettings.screenOrientation)
+    val screenOrientation: StateFlow<String> = _screenOrientation.asStateFlow()
+
+    private val _videoRotateDegrees = MutableStateFlow(initialSavedSettings.videoRotateDegrees)
+    val videoRotateDegrees: StateFlow<Int> = _videoRotateDegrees.asStateFlow()
+
+    private val _liveState = MutableStateFlow(
+        LiveState(
+            userId = "vercel_web_cms",
+            orientation = initialSavedSettings.combinedOrientation,
+            scaleMode = initialSavedSettings.scaleMode,
+            isMuted = initialSavedSettings.isMuted,
+            kioskLocked = initialSavedSettings.kioskLocked
+        )
+    )
     val liveState: StateFlow<LiveState> = _liveState.asStateFlow()
 
     private val _videos = MutableStateFlow<List<PlaylistVideo>>(emptyList())
     val videos: StateFlow<List<PlaylistVideo>> = _videos.asStateFlow()
+
+    private val _allCloudVideos = MutableStateFlow<List<PlaylistVideo>>(emptyList())
+    val allCloudVideos: StateFlow<List<PlaylistVideo>> = _allCloudVideos.asStateFlow()
+
+    private val _forcedOfflineVideoId = MutableStateFlow<String?>(null)
+    val forcedOfflineVideoId: StateFlow<String?> = _forcedOfflineVideoId.asStateFlow()
 
     private val _otaSlotState = MutableStateFlow(localManager.getOtaSlotState())
     val otaSlotState: StateFlow<OtaSlotState> = _otaSlotState.asStateFlow()
@@ -91,11 +120,15 @@ class SignageViewModel(
     private val _lastSyncCycleCount = MutableStateFlow(0L)
     val lastSyncCycleCount: StateFlow<Long> = _lastSyncCycleCount.asStateFlow()
 
-    private val _isPinDialogVisible = MutableStateFlow(false)
-    val isPinDialogVisible: StateFlow<Boolean> = _isPinDialogVisible.asStateFlow()
-
+    // Admin Sidebar Drawer & Tab State
     private val _isAdminPanelOpen = MutableStateFlow(false)
     val isAdminPanelOpen: StateFlow<Boolean> = _isAdminPanelOpen.asStateFlow()
+
+    private val _selectedSidebarTab = MutableStateFlow(0)
+    val selectedSidebarTab: StateFlow<Int> = _selectedSidebarTab.asStateFlow()
+
+    private val _isPinDialogVisible = MutableStateFlow(false)
+    val isPinDialogVisible: StateFlow<Boolean> = _isPinDialogVisible.asStateFlow()
 
     private val _pinError = MutableStateFlow<String?>(null)
     val pinError: StateFlow<String?> = _pinError.asStateFlow()
@@ -103,18 +136,19 @@ class SignageViewModel(
     private var syncLoopJob: Job? = null
     private var otaProcessingInFlight = false
     private var lastSeenPushCommand: String = ""
+    private var hasLocalSettingsOverride: Boolean = initialSavedSettings.hasLocalOverrideSaved
     private val cornerTapTimestamps = mutableListOf<Long>()
 
     init {
         appendLog(
             LogLevel.INFO,
             "BOOT",
-            "PulseCast Android TV Display Client initialized. Slot: ${_otaSlotState.value.activeSlot} (v${_otaSlotState.value.installedVersionName})"
+            "PulseCast Android TV Client ready. Orientation: ${_screenOrientation.value}, Video Rotate: ${_videoRotateDegrees.value}°, Scale: ${_liveState.value.scaleMode}"
         )
         appendLog(
             LogLevel.INFO,
             "WEB_CMS",
-            "Connecting 2.5s real-time sync loop to Web CMS: ${_cmsServerUrl.value}"
+            "Starting real-time 2.0s online sync loop with ${_cmsServerUrl.value} (Pairing Code: ${_localPairingCode.value})"
         )
         startRealTimeSyncLoop()
     }
@@ -124,31 +158,58 @@ class SignageViewModel(
         syncLoopJob = viewModelScope.launch {
             while (isActive) {
                 runSingleSyncCycle()
-                delay(2500L)
+                // Sync every 2.0 seconds (2000ms) when online, or 3.0 seconds when retrying offline
+                val delayMs = if (_isWebCmsConnected.value) 2000L else 2500L
+                delay(delayMs)
             }
         }
     }
 
     fun forceImmediateSync() {
         viewModelScope.launch {
-            appendLog(LogLevel.INFO, "WEB_CMS", "Forcing immediate sync with ${_cmsServerUrl.value}...")
+            appendLog(LogLevel.INFO, "WEB_CMS", "Syncing now with ${_cmsServerUrl.value}...")
             runSingleSyncCycle()
-            showToast("Synced with ${_cmsServerUrl.value}")
+            showToast("Synced with Web Dashboard (2s Live)")
         }
     }
 
-    fun updateCmsServerUrl(newUrl: String) {
-        val cleaned = localManager.setCmsServerUrl(newUrl)
-        _cmsServerUrl.value = cleaned
-        appendLog(LogLevel.INFO, "WEB_CMS", "Updated Web CMS Server URL -> $cleaned")
-        forceImmediateSync()
-    }
+    fun pairNowWithWebDashboard(customPairingCode: String, customDeviceName: String, customServerUrl: String) {
+        viewModelScope.launch {
+            val cleanUrl = localManager.setCmsServerUrl(customServerUrl)
+            _cmsServerUrl.value = cleanUrl
 
-    fun updateDeviceName(newName: String) {
-        val cleaned = localManager.setDeviceName(newName)
-        _deviceName.value = cleaned
-        appendLog(LogLevel.INFO, "DEVICE", "Updated TV Display Name -> $cleaned")
-        forceImmediateSync()
+            val cleanCode = if (customPairingCode.filter { it.isDigit() }.length == 6) {
+                localManager.setCustomPairingCode(customPairingCode)
+            } else {
+                _localPairingCode.value
+            }
+            _localPairingCode.value = cleanCode
+
+            val cleanName = localManager.setDeviceName(customDeviceName)
+            _deviceName.value = cleanName
+
+            appendLog(LogLevel.INFO, "PAIRING", "Pairing with Web CMS ($cleanUrl) using 6-digit code $cleanCode...")
+            val pairRes = vercelClient.pairDeviceWithWebCms(
+                baseUrl = cleanUrl,
+                deviceId = _localDeviceId.value,
+                pairingCode = cleanCode,
+                deviceName = cleanName,
+                orientation = _liveState.value.orientation,
+                videoRotateDegrees = _videoRotateDegrees.value,
+                scaleMode = _liveState.value.scaleMode,
+                isMuted = _liveState.value.isMuted
+            )
+            pairRes.onSuccess {
+                _isPairedWithCms.value = true
+                _isWebCmsConnected.value = true
+                appendLog(LogLevel.INFO, "PAIRING", "Real-Time Paired with Web CMS ($cleanCode)!")
+                showToast("✔ Paired Live with Web Dashboard ($cleanCode)!")
+            }.onFailure {
+                appendLog(LogLevel.WARN, "PAIRING", "Pair request sent; awaiting Web CMS response...")
+                showToast("Pairing Code $cleanCode active — syncing every 2s")
+            }
+            runSingleSyncCycle()
+        }
     }
 
     fun regenerateSixDigitPairingCode() {
@@ -156,7 +217,7 @@ class SignageViewModel(
         _localPairingCode.value = newCode
         appendLog(LogLevel.INFO, "PAIRING", "Generated new 6-digit pairing code: $newCode")
         showToast("New 6-Digit Pairing Code: $newCode")
-        forceImmediateSync()
+        pairNowWithWebDashboard(newCode, _deviceName.value, _cmsServerUrl.value)
     }
 
     private suspend fun runSingleSyncCycle() {
@@ -166,7 +227,6 @@ class SignageViewModel(
             it.isVerifiedCached || localManager.isFileVerifiedCached(it.localFileName)
         }.toLong()
 
-        // 1. Poll & Heartbeat with Web CMS Dashboard (https://tv-br.vercel.app/api/heartbeat)
         val syncResult = vercelClient.syncHeartbeatWithWebCms(
             baseUrl = _cmsServerUrl.value,
             deviceId = _localDeviceId.value,
@@ -180,11 +240,13 @@ class SignageViewModel(
         syncResult.onSuccess { payload ->
             val wasConnected = _isWebCmsConnected.value
             _isWebCmsConnected.value = true
+            _isPairedWithCms.value = payload.isPairedWithCms
+
             if (!wasConnected) {
                 appendLog(
                     LogLevel.INFO,
                     "WEB_CMS",
-                    "Connected to Web CMS (${_cmsServerUrl.value}) — Code: ${_localPairingCode.value}"
+                    "Connected to Web CMS (${_cmsServerUrl.value}) — 2.0s Real-Time Sync Active"
                 )
             }
 
@@ -193,54 +255,64 @@ class SignageViewModel(
             }
 
             val prevState = _liveState.value
-            val nextState = payload.liveState
-            _liveState.value = nextState
+            val prevRotateDeg = _videoRotateDegrees.value
+            val remoteState = payload.liveState
+            val isNewRemotePush = remoteState.lastPushCommand.isNotBlank() &&
+                remoteState.lastPushCommand != lastSeenPushCommand &&
+                lastSeenPushCommand.isNotEmpty()
+
+            // Apply remote orientation/rotation if user hasn't locked a local override OR if Web CMS just pushed a new command
+            if (!hasLocalSettingsOverride || isNewRemotePush) {
+                applyRemoteOrientationToState(remoteState.orientation, payload.videoRotateDegrees)
+                if (_liveState.value != remoteState) {
+                    _liveState.value = remoteState
+                }
+                if (prevState.orientation != remoteState.orientation && lastSeenPushCommand.isNotEmpty()) {
+                    showToast("Web CMS: Orientation -> ${remoteState.orientation}")
+                }
+                if (prevRotateDeg != _videoRotateDegrees.value && lastSeenPushCommand.isNotEmpty()) {
+                    showToast("Web CMS: Video Rotated -> ${_videoRotateDegrees.value}°")
+                }
+                if (prevState.scaleMode != remoteState.scaleMode && lastSeenPushCommand.isNotEmpty()) {
+                    showToast("Web CMS: Scale -> ${remoteState.scaleMode}")
+                }
+            } else {
+                // Keep locally saved orientation/scale while syncing push commands & OTA version
+                _liveState.value = _liveState.value.copy(
+                    lastPushCommand = remoteState.lastPushCommand,
+                    activeOtaVersionCode = remoteState.activeOtaVersionCode,
+                    activeOtaVersionName = remoteState.activeOtaVersionName
+                )
+            }
+
             _assignedVideoId.value = payload.assignedVideoId
 
-            if (prevState.orientation != nextState.orientation) {
-                appendLog(
-                    LogLevel.INFO,
-                    "DISPLAY",
-                    "Web CMS changed device orientation -> ${nextState.orientation}"
-                )
-                showToast("Web CMS: Orientation -> ${nextState.orientation}")
+            if (isNewRemotePush && remoteState.lastPushCommand.startsWith("PUSH_PLAY")) {
+                _isUsingBackupStream.value = false
+                showToast("▶ Web CMS Push & Play received!")
+                appendLog(LogLevel.INFO, "CMS_PUSH", "Executed remote Push & Play (${remoteState.lastPushCommand})")
             }
-            if (prevState.scaleMode != nextState.scaleMode) {
-                appendLog(
-                    LogLevel.INFO,
-                    "DISPLAY",
-                    "Web CMS changed scale mode -> ${nextState.scaleMode}"
-                )
-                showToast("Web CMS: Scale -> ${nextState.scaleMode}")
-            }
-            if (prevState.isMuted != nextState.isMuted) {
-                appendLog(
-                    LogLevel.INFO,
-                    "AUDIO",
-                    if (nextState.isMuted) "Web CMS muted TV audio" else "Web CMS unmuted TV audio"
-                )
-                showToast(if (nextState.isMuted) "Web CMS: Audio Muted" else "Web CMS: Audio Live")
+            if (remoteState.lastPushCommand.isNotBlank()) {
+                lastSeenPushCommand = remoteState.lastPushCommand
             }
 
-            if (nextState.lastPushCommand.isNotBlank() &&
-                nextState.lastPushCommand != lastSeenPushCommand
-            ) {
-                if (lastSeenPushCommand.isNotEmpty() &&
-                    nextState.lastPushCommand.startsWith("PUSH_PLAY")
-                ) {
-                    _isUsingBackupStream.value = false
-                    showToast("Web CMS Push & Play received!")
-                    appendLog(LogLevel.INFO, "CMS_PUSH", "Executed remote Push & Play command (${nextState.lastPushCommand})")
-                }
-                lastSeenPushCommand = nextState.lastPushCommand
-            }
-
-            // Merge remote playlist videos while preserving local cached status
-            val mergedVideos = payload.videos.map { remoteVid ->
+            // Merge remote videos while preserving local offline file verification (✔)
+            // Only emit if the list actually changed so ExoPlayer never stutters or hangs!
+            val mergedActiveVideos = payload.videos.map { remoteVid ->
                 val isCached = localManager.isFileVerifiedCached(remoteVid.localFileName)
-                remoteVid.copy(isVerifiedCached = isCached || remoteVid.isVerifiedCached)
+                remoteVid.copy(isVerifiedCached = isCached)
             }
-            _videos.value = mergedVideos
+            if (!areVideoListsEquivalent(_videos.value, mergedActiveVideos)) {
+                _videos.value = mergedActiveVideos
+            }
+
+            val mergedAllCloud = payload.allCloudVideos.map { remoteVid ->
+                val isCached = localManager.isFileVerifiedCached(remoteVid.localFileName)
+                remoteVid.copy(isVerifiedCached = isCached)
+            }
+            if (!areVideoListsEquivalent(_allCloudVideos.value, mergedAllCloud)) {
+                _allCloudVideos.value = mergedAllCloud
+            }
 
             // Check for remote OTA software updates or rollback triggers
             val latestActiveRelease = payload.otaReleases.firstOrNull { it.releaseStatus == "ACTIVE" }
@@ -252,7 +324,7 @@ class SignageViewModel(
             ) {
                 triggerBackgroundOtaInstallation(latestActiveRelease)
             } else if (!otaProcessingInFlight &&
-                nextState.lastPushCommand.startsWith("OTA_ROLLBACK") &&
+                remoteState.lastPushCommand.startsWith("OTA_ROLLBACK") &&
                 currentOta.installedVersionCode > 1L
             ) {
                 triggerManualOtaRollback("Remote rollback command from Web CMS Dashboard")
@@ -262,64 +334,83 @@ class SignageViewModel(
                 appendLog(
                     LogLevel.WARN,
                     "WEB_CMS",
-                    "Web CMS unreachable (${err.message}). Continuing offline playback from local cache."
+                    "Web CMS offline (${err.message}). Playing seamlessly from local offline storage."
                 )
             }
             _isWebCmsConnected.value = false
         }
-
-        // 2. Ensure all active playlist videos are cached in 600KB chunks locally for offline playback (✔)
-        val activeVideos = _videos.value
-        for (video in activeVideos) {
-            val isLocalOk = localManager.isFileVerifiedCached(video.localFileName)
-            if (!isLocalOk && !_chunkTelemetry.value.isActive) {
-                appendLog(
-                    LogLevel.INFO,
-                    "CACHE",
-                    "Caching '${video.title}' to local offline storage in 600KB chunks..."
-                )
-                val result = localManager.syncRemoteVideoToLocalCache(
-                    sourceUrl = video.sourceUrl,
-                    targetFileName = video.localFileName.ifBlank { "${video.id}.mp4" }
-                ) { chunk, total, bytes ->
-                    _chunkTelemetry.value = ChunkTransferTelemetry(
-                        isActive = true,
-                        label = "Caching ${video.title} (600KB chunks)",
-                        currentChunk = chunk,
-                        totalChunks = total,
-                        bytesTransferred = bytes
-                    )
-                }
-                _chunkTelemetry.value = ChunkTransferTelemetry(isActive = false)
-                result.onSuccess { cached ->
-                    _videos.value = _videos.value.map {
-                        if (it.id == video.id) {
-                            it.copy(localFileName = cached.localFileName, isVerifiedCached = true)
-                        } else it
-                    }
-                    appendLog(
-                        LogLevel.INFO,
-                        "CACHE",
-                        "Verified offline cache (✔) for '${video.title}' (${cached.chunkCount} x 600KB chunks, SHA-256 ${cached.sha256Checksum.take(8)})"
-                    )
-                }
-            }
-        }
     }
 
-    fun showToast(message: String) {
-        _syncToastMessage.value = message
-        viewModelScope.launch {
-            delay(3200L)
-            if (_syncToastMessage.value == message) {
-                _syncToastMessage.value = null
+    private fun areVideoListsEquivalent(a: List<PlaylistVideo>, b: List<PlaylistVideo>): Boolean {
+        if (a.size != b.size) return false
+        for (i in a.indices) {
+            val va = a[i]
+            val vb = b[i]
+            if (va.id != vb.id ||
+                va.title != vb.title ||
+                va.sourceUrl != vb.sourceUrl ||
+                va.localFileName != vb.localFileName ||
+                va.isVerifiedCached != vb.isVerifiedCached
+            ) {
+                return false
+            }
+        }
+        return true
+    }
+
+    private fun applyRemoteOrientationToState(remoteOrientation: String, explicitRotateDegrees: Int? = null) {
+        when (remoteOrientation.uppercase(Locale.US)) {
+            "PORTRAIT" -> {
+                _screenOrientation.value = "PORTRAIT"
+                _videoRotateDegrees.value = explicitRotateDegrees?.let { ((it % 360) + 360) % 360 } ?: 0
+            }
+            "ROTATE_90" -> {
+                _screenOrientation.value = "LANDSCAPE"
+                _videoRotateDegrees.value = explicitRotateDegrees?.let { ((it % 360) + 360) % 360 } ?: 90
+            }
+            "ROTATE_180" -> {
+                _screenOrientation.value = "LANDSCAPE"
+                _videoRotateDegrees.value = explicitRotateDegrees?.let { ((it % 360) + 360) % 360 } ?: 180
+            }
+            "ROTATE_270" -> {
+                _screenOrientation.value = "LANDSCAPE"
+                _videoRotateDegrees.value = explicitRotateDegrees?.let { ((it % 360) + 360) % 360 } ?: 270
+            }
+            else -> {
+                _screenOrientation.value = "LANDSCAPE"
+                _videoRotateDegrees.value = explicitRotateDegrees?.let { ((it % 360) + 360) % 360 } ?: 0
             }
         }
     }
 
     // ------------------------------------------------------------------------
-    // 5-Tap Hidden Corner Gesture & PIN-Protected Admin Panel
+    // Top-Right Green Star Admin Trigger, Built-In PIN Keypad & Bottom-Nav Hub
     // ------------------------------------------------------------------------
+
+    /**
+     * Triggered when the operator taps the small green star in the top-right corner.
+     * Opens the built-in password keypad modal first so the operator enters their PIN.
+     */
+    fun onGreenStarAdminClick(tabIndex: Int = 0) {
+        _selectedSidebarTab.value = tabIndex
+        if (_isAdminPanelOpen.value) {
+            return
+        }
+        openAdminPinPrompt()
+    }
+
+    fun openAdminSidebarDirectly(tabIndex: Int = 0) {
+        _selectedSidebarTab.value = tabIndex
+        if (_liveState.value.kioskLocked && !_isAdminPanelOpen.value) {
+            openAdminPinPrompt()
+        } else {
+            _isAdminPanelOpen.value = true
+        }
+    }
+
+    fun selectSidebarTab(tabIndex: Int) {
+        _selectedSidebarTab.value = tabIndex
+    }
 
     fun onCornerSecretTap() {
         val now = System.currentTimeMillis()
@@ -334,7 +425,6 @@ class SignageViewModel(
     fun openAdminPinPrompt() {
         _pinError.value = null
         _isPinDialogVisible.value = true
-        appendLog(LogLevel.INFO, "SECURITY", "Admin PIN verification dialog opened")
     }
 
     fun dismissAdminPinPrompt() {
@@ -348,10 +438,9 @@ class SignageViewModel(
             _isPinDialogVisible.value = false
             _pinError.value = null
             _isAdminPanelOpen.value = true
-            appendLog(LogLevel.INFO, "SECURITY", "Admin PIN verified. Unlocked Protected Admin Settings Panel.")
+            appendLog(LogLevel.INFO, "SECURITY", "Admin password verified via built-in keypad. Opened Admin Hub.")
         } else {
-            _pinError.value = "Invalid PIN code. Default operator PIN is $expectedPin."
-            appendLog(LogLevel.WARN, "SECURITY", "Rejected invalid Admin PIN attempt")
+            _pinError.value = "Incorrect PIN. Default PIN is $expectedPin."
         }
     }
 
@@ -360,76 +449,259 @@ class SignageViewModel(
     }
 
     // ------------------------------------------------------------------------
-    // Local Admin Overrides (Also Pushed to Web CMS Dashboard)
+    // Orientation, Video Rotate (+90° / -90° / 0° / 90° / 180° / 270°), Scale Mode & "Save Settings"
     // ------------------------------------------------------------------------
 
-    fun setOrientation(orientation: String) {
-        _liveState.value = _liveState.value.copy(orientation = orientation)
-        viewModelScope.launch {
-            vercelClient.pushDeviceControlUpdate(
-                baseUrl = _cmsServerUrl.value,
-                deviceId = _localDeviceId.value,
-                fields = mapOf("orientation" to orientation)
-            )
-            appendLog(LogLevel.INFO, "DISPLAY", "Device orientation set to $orientation & synced to Web CMS")
-            showToast("Orientation: $orientation")
-        }
+    fun setScreenOrientationMode(screenOrient: String) {
+        _screenOrientation.value = screenOrient
+        val combined = computeCombinedOrientation(screenOrient, _videoRotateDegrees.value)
+        _liveState.value = _liveState.value.copy(orientation = combined)
+    }
+
+    fun setVideoRotationAngle(degrees: Int) {
+        val normalized = ((degrees % 360) + 360) % 360
+        _videoRotateDegrees.value = normalized
+        val combined = computeCombinedOrientation(_screenOrientation.value, normalized)
+        _liveState.value = _liveState.value.copy(orientation = combined)
+    }
+
+    fun rotateVideoByDelta(deltaDegrees: Int) {
+        val next = ((_videoRotateDegrees.value + deltaDegrees) % 360 + 360) % 360
+        setVideoRotationAngle(next)
+        showToast("Video Rotated: ${next}°")
+    }
+
+    fun setOrientationPreset(preset: String) {
+        applyRemoteOrientationToState(preset)
+        _liveState.value = _liveState.value.copy(orientation = preset)
     }
 
     fun setScaleMode(scaleMode: String) {
         _liveState.value = _liveState.value.copy(scaleMode = scaleMode)
-        viewModelScope.launch {
-            vercelClient.pushDeviceControlUpdate(
-                baseUrl = _cmsServerUrl.value,
-                deviceId = _localDeviceId.value,
-                fields = mapOf("scaleMode" to scaleMode)
-            )
-            appendLog(LogLevel.INFO, "DISPLAY", "Video scale mode set to $scaleMode & synced to Web CMS")
-            showToast("Scale Mode: $scaleMode")
-        }
     }
 
     fun toggleAudioMute(isMuted: Boolean) {
         _liveState.value = _liveState.value.copy(isMuted = isMuted)
-        viewModelScope.launch {
-            vercelClient.pushDeviceControlUpdate(
-                baseUrl = _cmsServerUrl.value,
-                deviceId = _localDeviceId.value,
-                fields = mapOf("isMuted" to isMuted)
-            )
-            appendLog(LogLevel.INFO, "AUDIO", if (isMuted) "Display audio muted" else "Display audio unmuted")
-            showToast(if (isMuted) "Audio Muted" else "Audio Unmuted")
-        }
     }
 
     fun toggleKioskLock(locked: Boolean) {
         _liveState.value = _liveState.value.copy(kioskLocked = locked)
-        viewModelScope.launch {
-            vercelClient.updateGlobalStateFields(
-                baseUrl = _cmsServerUrl.value,
-                fields = mapOf("kioskLocked" to locked)
-            )
-            appendLog(LogLevel.INFO, "KIOSK", "Kiosk mode lock set to $locked")
-            showToast(if (locked) "Kiosk Mode Locked" else "Kiosk Mode Unlocked")
+    }
+
+    private fun computeCombinedOrientation(screenOrient: String, rotateDeg: Int): String {
+        return when {
+            screenOrient == "PORTRAIT" -> "PORTRAIT"
+            rotateDeg == 90 -> "ROTATE_90"
+            rotateDeg == 180 -> "ROTATE_180"
+            rotateDeg == 270 -> "ROTATE_270"
+            else -> "LANDSCAPE"
         }
+    }
+
+    /**
+     * Saves Orientation, Video Rotate (0°/90°/180°/270°), Scale Mode (FIT/FILL/ZOOM), Audio Mute, and Kiosk Lock
+     * to persistent device storage AND syncs them live with the Web CMS Dashboard.
+     */
+    fun saveAllDisplayAndRotationSettings() {
+        val combinedOrient = computeCombinedOrientation(_screenOrientation.value, _videoRotateDegrees.value)
+        val updatedLive = _liveState.value.copy(orientation = combinedOrient)
+        _liveState.value = updatedLive
+        hasLocalSettingsOverride = true
+
+        val settingsToSave = SavedDisplaySettings(
+            screenOrientation = _screenOrientation.value,
+            videoRotateDegrees = _videoRotateDegrees.value,
+            combinedOrientation = combinedOrient,
+            scaleMode = updatedLive.scaleMode,
+            isMuted = updatedLive.isMuted,
+            kioskLocked = updatedLive.kioskLocked,
+            syncIntervalSeconds = 2,
+            hasLocalOverrideSaved = true
+        )
+        localManager.saveDisplaySettings(settingsToSave)
+
+        viewModelScope.launch {
+            vercelClient.pushDeviceControlUpdate(
+                baseUrl = _cmsServerUrl.value,
+                deviceId = _localDeviceId.value,
+                pairingCode = _localPairingCode.value,
+                fields = mapOf(
+                    "orientation" to _screenOrientation.value,
+                    "videoRotateDegrees" to _videoRotateDegrees.value,
+                    "scaleMode" to updatedLive.scaleMode,
+                    "isMuted" to updatedLive.isMuted,
+                    "kioskLocked" to updatedLive.kioskLocked
+                )
+            )
+            appendLog(
+                LogLevel.INFO,
+                "SETTINGS",
+                "Saved Settings: Screen=${_screenOrientation.value}, VideoRotate=${_videoRotateDegrees.value}°, Scale=${updatedLive.scaleMode}, Mute=${updatedLive.isMuted}"
+            )
+            showToast("✔ Settings Saved & Synced (${_screenOrientation.value} • ${_videoRotateDegrees.value}° • ${updatedLive.scaleMode})")
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Cloud Video "Download Offline View" & Local Offline Playback
+    // ------------------------------------------------------------------------
+
+    /**
+     * Downloads a Cloud-uploaded video into persistent local storage inside the app
+     * so it can be viewed & looped completely offline ("Download Offline View").
+     */
+    fun downloadCloudVideoForOfflineView(video: PlaylistVideo) {
+        if (_chunkTelemetry.value.isActive) {
+            showToast("A video download is already in progress...")
+            return
+        }
+        viewModelScope.launch {
+            val targetName = video.localFileName.ifBlank { "${video.id}.mp4" }
+            appendLog(
+                LogLevel.INFO,
+                "OFFLINE_DL",
+                "Downloading '${video.title}' from Cloud to app offline storage..."
+            )
+            _chunkTelemetry.value = ChunkTransferTelemetry(
+                isActive = true,
+                videoId = video.id,
+                label = "Downloading '${video.title}' for Offline View",
+                currentChunk = 0,
+                totalChunks = 1,
+                bytesTransferred = 0L,
+                progressPercent = 5
+            )
+
+            val result = localManager.syncRemoteVideoToLocalCache(
+                sourceUrl = video.sourceUrl,
+                targetFileName = targetName
+            ) { chunk, total, bytes ->
+                val pct = ((chunk.toFloat() / total.coerceAtLeast(1).toFloat()) * 100f).toInt().coerceIn(5, 99)
+                _chunkTelemetry.value = ChunkTransferTelemetry(
+                    isActive = true,
+                    videoId = video.id,
+                    label = "Downloading '${video.title}'",
+                    currentChunk = chunk,
+                    totalChunks = total,
+                    bytesTransferred = bytes,
+                    progressPercent = pct
+                )
+            }
+
+            _chunkTelemetry.value = ChunkTransferTelemetry(isActive = false)
+
+            result.onSuccess { saved ->
+                val updatedVideo = video.copy(
+                    localFileName = saved.localFileName,
+                    sizeBytes = saved.sizeBytes,
+                    chunkCount = saved.chunkCount,
+                    isVerifiedCached = true
+                )
+                _videos.value = if (_videos.value.any { it.id == video.id }) {
+                    _videos.value.map { if (it.id == video.id) updatedVideo else it }
+                } else {
+                    _videos.value + updatedVideo
+                }
+                _allCloudVideos.value = if (_allCloudVideos.value.any { it.id == video.id }) {
+                    _allCloudVideos.value.map { if (it.id == video.id) updatedVideo else it }
+                } else {
+                    _allCloudVideos.value + updatedVideo
+                }
+                appendLog(
+                    LogLevel.INFO,
+                    "OFFLINE_DL",
+                    "✔ Downloaded '${video.title}' offline (${saved.sizeBytes / 1024} KB in ${saved.chunkCount} chunks)"
+                )
+                showToast("✔ Downloaded '${video.title}' for Offline View!")
+            }.onFailure { err ->
+                appendLog(LogLevel.ERROR, "OFFLINE_DL", "Failed offline download: ${err.message}")
+                showToast("Offline download failed: ${err.localizedMessage}")
+            }
+        }
+    }
+
+    fun downloadAllCloudVideosOffline() {
+        if (_chunkTelemetry.value.isActive) return
+        viewModelScope.launch {
+            val allList = (_allCloudVideos.value + _videos.value).distinctBy { it.id }
+            if (allList.isEmpty()) {
+                showToast("No cloud videos found yet. Upload a video in Web Dashboard first.")
+                return@launch
+            }
+            for (video in allList) {
+                if (!localManager.isRealMp4PlayableOffline(video.localFileName)) {
+                    val targetName = video.localFileName.ifBlank { "${video.id}.mp4" }
+                    val res = localManager.syncRemoteVideoToLocalCache(
+                        sourceUrl = video.sourceUrl,
+                        targetFileName = targetName
+                    ) { chunk, total, bytes ->
+                        val pct = ((chunk.toFloat() / total.coerceAtLeast(1).toFloat()) * 100f).toInt().coerceIn(5, 99)
+                        _chunkTelemetry.value = ChunkTransferTelemetry(
+                            isActive = true,
+                            videoId = video.id,
+                            label = "Downloading '${video.title}'",
+                            currentChunk = chunk,
+                            totalChunks = total,
+                            bytesTransferred = bytes,
+                            progressPercent = pct
+                        )
+                    }
+                    res.onSuccess { saved ->
+                        val updated = video.copy(
+                            localFileName = saved.localFileName,
+                            sizeBytes = saved.sizeBytes,
+                            chunkCount = saved.chunkCount,
+                            isVerifiedCached = true
+                        )
+                        _videos.value = _videos.value.map { if (it.id == video.id) updated else it }
+                        _allCloudVideos.value = _allCloudVideos.value.map { if (it.id == video.id) updated else it }
+                    }
+                }
+            }
+            _chunkTelemetry.value = ChunkTransferTelemetry(isActive = false)
+            showToast("✔ All Cloud Videos Downloaded for Offline View!")
+        }
+    }
+
+    /**
+     * Switches playback to play a specific downloaded offline video (or all videos).
+     */
+    fun playVideoOfflineNow(video: PlaylistVideo) {
+        if (!localManager.isFileVerifiedCached(video.localFileName)) {
+            downloadCloudVideoForOfflineView(video)
+        }
+        _forcedOfflineVideoId.value = video.id
+        if (_videos.value.none { it.id == video.id }) {
+            _videos.value = listOf(video) + _videos.value
+        }
+        showToast("▶ Playing '${video.title}' (Offline Local Storage)")
+        appendLog(LogLevel.INFO, "OFFLINE_PLAY", "Playing '${video.title}' directly from local storage")
+    }
+
+    fun clearForcedSingleOfflineVideo() {
+        _forcedOfflineVideoId.value = null
+        showToast("Looping full active playlist")
     }
 
     fun ingestLocalVideoForOfflineCache(uri: Uri, title: String) {
         viewModelScope.launch {
-            val cleanTitle = title.trim().ifEmpty { "Offline Cached Ad ${(10..99).random()}" }
+            val cleanTitle = title.trim().ifEmpty { "Local Offline Video ${(10..99).random()}" }
             val fileName = "local_${System.currentTimeMillis()}.mp4"
-            appendLog(LogLevel.INFO, "CACHE", "Ingesting '$cleanTitle' in 600KB chunks to local offline storage...")
+            appendLog(LogLevel.INFO, "CACHE", "Saving '$cleanTitle' to app offline storage...")
 
             val result = localManager.ingestLocalVideoUriInChunks(
                 uri = uri,
                 targetFileName = fileName
             ) { chunk, total, bytes ->
+                val pct = ((chunk.toFloat() / total.coerceAtLeast(1).toFloat()) * 100f).toInt().coerceIn(5, 99)
                 _chunkTelemetry.value = ChunkTransferTelemetry(
                     isActive = true,
-                    label = "Caching $cleanTitle (600KB chunks)",
+                    videoId = fileName,
+                    label = "Saving $cleanTitle Offline",
                     currentChunk = chunk,
                     totalChunks = total,
-                    bytesTransferred = bytes
+                    bytesTransferred = bytes,
+                    progressPercent = pct
                 )
             }
             _chunkTelemetry.value = ChunkTransferTelemetry(isActive = false)
@@ -449,21 +721,27 @@ class SignageViewModel(
                     sortOrder = _videos.value.size.toLong()
                 )
                 _videos.value = _videos.value + newVideo
+                _allCloudVideos.value = _allCloudVideos.value + newVideo
                 appendLog(
                     LogLevel.INFO,
                     "CACHE",
-                    "Saved '$cleanTitle' to offline storage (${uploaded.chunkCount} x 600KB chunks ✔)"
+                    "✔ Saved '$cleanTitle' offline (${uploaded.chunkCount} chunks)"
                 )
-                showToast("Cached '$cleanTitle' Offline (✔)")
+                showToast("✔ Saved '$cleanTitle' for Offline View!")
             }
         }
     }
 
     fun deleteVideoFromPlaylist(video: PlaylistVideo) {
+        localManager.deleteCachedVideoFile(video.localFileName)
         _videos.value = _videos.value.filterNot { it.id == video.id }
+        _allCloudVideos.value = _allCloudVideos.value.filterNot { it.id == video.id }
+        if (_forcedOfflineVideoId.value == video.id) {
+            _forcedOfflineVideoId.value = null
+        }
         viewModelScope.launch {
             vercelClient.deleteVideoOnWebCms(_cmsServerUrl.value, video.id)
-            appendLog(LogLevel.INFO, "PLAYLIST", "Removed '${video.title}' from playlist")
+            appendLog(LogLevel.INFO, "PLAYLIST", "Removed '${video.title}' from offline cache & playlist")
             showToast("Removed '${video.title}'")
         }
     }
@@ -481,9 +759,19 @@ class SignageViewModel(
         appendLog(
             LogLevel.RECOVERY,
             "WATCHDOG",
-            "3.5s Watchdog / Stream Error on '$stalledVideoTitle' ($reason) -> Auto-recovered via verified backup stream!"
+            "3.5s Watchdog / Stream Error on '$stalledVideoTitle' ($reason) -> Switched to offline/backup stream!"
         )
-        showToast("Watchdog Auto-Recovery: Switched to verified backup stream")
+        showToast("Watchdog Auto-Recovery: Playing backup/offline stream")
+    }
+
+    fun showToast(message: String) {
+        _syncToastMessage.value = message
+        viewModelScope.launch {
+            delay(3200L)
+            if (_syncToastMessage.value == message) {
+                _syncToastMessage.value = null
+            }
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -499,7 +787,7 @@ class SignageViewModel(
                 appendLog(
                     LogLevel.OTA,
                     "OTA_CLIENT",
-                    "Detected new OTA Release v${release.versionName} (Build ${release.versionCode}) from Web CMS. Starting background download..."
+                    "Detected new OTA Release v${release.versionName} (Build ${release.versionCode}). Downloading..."
                 )
                 val finalState = localManager.downloadVerifyAndApplyOtaUpdate(
                     releaseId = release.id,
@@ -522,7 +810,7 @@ class SignageViewModel(
                 _otaProgressPercent.value = null
 
                 if (finalState.otaStatus == "ROLLED_BACK") {
-                    showToast("OTA Failed Verification -> Automatic Rollback to v${finalState.installedVersionName}!")
+                    showToast("OTA Failed Verification -> Auto-Rollback to v${finalState.installedVersionName}!")
                 } else {
                     showToast("OTA Updated to v${finalState.installedVersionName} (${finalState.activeSlot})")
                 }

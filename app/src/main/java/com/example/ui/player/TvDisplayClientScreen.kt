@@ -1,5 +1,7 @@
 package com.example.ui.player
 
+import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.net.Uri
 import android.view.KeyEvent
 import androidx.activity.compose.BackHandler
@@ -15,7 +17,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,10 +25,10 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -41,20 +42,33 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Backspace
+import androidx.compose.material.icons.filled.AccessibilityNew
+import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudOff
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
-import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.RotateLeft
+import androidx.compose.material.icons.filled.RotateRight
+import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.ScreenRotation
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SettingsBackupRestore
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.SystemUpdateAlt
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.UploadFile
-import androidx.compose.material.icons.filled.VolumeOff
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -66,12 +80,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -89,6 +105,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -99,6 +116,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -116,6 +136,8 @@ import com.example.data.model.DiagnosticLogEntry
 import com.example.data.model.LiveState
 import com.example.data.model.LogLevel
 import com.example.data.model.PlaylistVideo
+import com.example.system.KioskPermissionHelper
+import com.example.system.KioskPermissionsStatus
 import com.example.ui.theme.AlertCrimson
 import com.example.ui.theme.BorderSlate
 import com.example.ui.theme.BroadcastIndigo
@@ -138,10 +160,15 @@ fun TvDisplayClientScreen(
     localManager: ChunkedStorageAndOtaManager,
     cmsServerUrl: String,
     isWebCmsConnected: Boolean,
+    isPairedWithCms: Boolean,
     deviceName: String,
     assignedVideoId: String,
+    screenOrientation: String,
+    videoRotateDegrees: Int,
     liveState: LiveState,
     videos: List<PlaylistVideo>,
+    allCloudVideos: List<PlaylistVideo>,
+    forcedOfflineVideoId: String?,
     pairingCode: String,
     deviceId: String,
     otaSlotState: OtaSlotState,
@@ -152,20 +179,49 @@ fun TvDisplayClientScreen(
     lastSyncCycleCount: Long,
     isPinDialogVisible: Boolean,
     isAdminPanelOpen: Boolean,
+    selectedSidebarTab: Int,
     pinError: String?
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     var isBufferingNow by remember { mutableStateOf(false) }
     var currentMediaIndex by remember { mutableIntStateOf(0) }
+    var permissionsStatus by remember { mutableStateOf(KioskPermissionHelper.checkAllPermissions(context)) }
 
-    // Kiosk Mode Lock back handler
+    // Automatically refresh 24x7 permission states whenever user returns from system settings popups
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                permissionsStatus = KioskPermissionHelper.checkAllPermissions(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    // Apply system Activity screen orientation when user changes Landscape / Portrait
+    LaunchedEffect(screenOrientation) {
+        val activity = context as? Activity ?: return@LaunchedEffect
+        val targetOrientation = if (screenOrientation.equals("PORTRAIT", ignoreCase = true)) {
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        }
+        if (activity.requestedOrientation != targetOrientation) {
+            activity.requestedOrientation = targetOrientation
+        }
+    }
+
+    // Back button closes Admin Hub or PIN dialog first
     BackHandler(enabled = true) {
         if (isAdminPanelOpen) {
             viewModel.closeAdminPanel()
         } else if (isPinDialogVisible) {
             viewModel.dismissAdminPinPrompt()
         } else if (liveState.kioskLocked) {
-            viewModel.showToast("Kiosk Mode Locked — Tap top-right corner 5x to unlock Admin Panel")
+            viewModel.showToast("Kiosk Locked — Tap the top-right ★ Green Star to unlock Admin")
         }
     }
 
@@ -186,28 +242,46 @@ fun TvDisplayClientScreen(
         }
     }
 
-    // Apply mute state immediately
     LaunchedEffect(liveState.isMuted) {
         exoPlayer.volume = if (liveState.isMuted) 0f else 1f
     }
 
-    // Rebuild ConcatenatingMediaSource whenever the playlist changes
-    LaunchedEffect(videos, isUsingBackupStream) {
-        if (videos.isEmpty()) {
+    val effectiveVideos = remember(videos, allCloudVideos, forcedOfflineVideoId) {
+        if (!forcedOfflineVideoId.isNullOrBlank()) {
+            val combined = (videos + allCloudVideos).distinctBy { it.id }
+            val match = combined.filter { it.id == forcedOfflineVideoId }
+            if (match.isNotEmpty()) match else videos
+        } else {
+            videos
+        }
+    }
+
+    // Stable signature so ExoPlayer ONLY prepares when actual video items or offline files change
+    val playlistSignature = remember(effectiveVideos, isUsingBackupStream) {
+        effectiveVideos.joinToString("|") { v ->
+            val hasPlayableLocal = localManager.isRealMp4PlayableOffline(v.localFileName)
+            "${v.id}:${v.sourceUrl}:${v.localFileName}:$hasPlayableLocal"
+        } + ":backup=$isUsingBackupStream"
+    }
+
+    LaunchedEffect(playlistSignature) {
+        if (effectiveVideos.isEmpty()) {
             exoPlayer.stop()
             exoPlayer.clearMediaItems()
             viewModel.onActiveVideoChanged("Standby (Empty Playlist)")
         } else {
             val concatenatingSource = ConcatenatingMediaSource()
-            videos.forEach { video ->
-                val localUri = if (video.id.startsWith("local_")) {
+            effectiveVideos.forEach { video ->
+                val playableOfflineUri = if (!isUsingBackupStream && localManager.isRealMp4PlayableOffline(video.localFileName)) {
                     localManager.getLocalVideoUri(video.localFileName)
                 } else null
+
                 val uriToPlay = when {
+                    playableOfflineUri != null -> playableOfflineUri
                     isUsingBackupStream -> Uri.parse(video.backupUrl.ifBlank { SignageViewModel.VERIFIED_BACKUP_STREAM_URL })
-                    localUri != null -> localUri
                     else -> Uri.parse(video.sourceUrl.ifBlank { SignageViewModel.VERIFIED_BACKUP_STREAM_URL })
                 }
+
                 val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
                     .createMediaSource(
                         MediaItem.Builder()
@@ -220,30 +294,33 @@ fun TvDisplayClientScreen(
             exoPlayer.setMediaSource(concatenatingSource)
             exoPlayer.prepare()
             exoPlayer.playWhenReady = true
-            val firstTitle = videos.firstOrNull()?.title ?: "Playing"
+            val firstTitle = effectiveVideos.firstOrNull()?.title ?: "Playing"
             viewModel.onActiveVideoChanged(firstTitle)
         }
     }
 
-    // Player Listener for track transitions and IOException/404 auto-recovery
-    DisposableEffect(exoPlayer, videos) {
+    DisposableEffect(exoPlayer, effectiveVideos) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 isBufferingNow = (playbackState == Player.STATE_BUFFERING)
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                val idx = exoPlayer.currentMediaItemIndex.coerceIn(0, (videos.size - 1).coerceAtLeast(0))
+                val idx = exoPlayer.currentMediaItemIndex.coerceIn(0, (effectiveVideos.size - 1).coerceAtLeast(0))
                 currentMediaIndex = idx
-                videos.getOrNull(idx)?.let { activeVid ->
+                effectiveVideos.getOrNull(idx)?.let { activeVid ->
                     viewModel.onActiveVideoChanged(activeVid.title)
                 }
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                val stalledVid = videos.getOrNull(currentMediaIndex)?.title ?: "Stream"
+                val activeVid = effectiveVideos.getOrNull(currentMediaIndex)
+                if (activeVid != null && localManager.isFileVerifiedCached(activeVid.localFileName)) {
+                    // Delete corrupt/partial local file and recover immediately via remote/backup stream
+                    localManager.deleteCachedVideoFile(activeVid.localFileName)
+                }
                 viewModel.onBufferingWatchdogTriggered(
-                    stalledVideoTitle = stalledVid,
+                    stalledVideoTitle = activeVid?.title ?: "Stream",
                     reason = "ExoPlayer ${error.errorCodeName}"
                 )
             }
@@ -260,25 +337,17 @@ fun TvDisplayClientScreen(
         }
     }
 
-    // 3.5-Second Buffering Watchdog Coroutine
-    LaunchedEffect(isBufferingNow, videos) {
-        if (isBufferingNow && videos.isNotEmpty() && !isUsingBackupStream) {
+    LaunchedEffect(isBufferingNow, playlistSignature) {
+        if (isBufferingNow && effectiveVideos.isNotEmpty() && !isUsingBackupStream) {
             delay(3500L)
             if (isBufferingNow) {
-                val stalledTitle = videos.getOrNull(currentMediaIndex)?.title ?: "Active Ad Stream"
+                val stalledTitle = effectiveVideos.getOrNull(currentMediaIndex)?.title ?: "Active Ad Stream"
                 viewModel.onBufferingWatchdogTriggered(
                     stalledVideoTitle = stalledTitle,
                     reason = "Buffering exceeded 3.5s threshold"
                 )
             }
         }
-    }
-
-    val rotationDegrees = when (liveState.orientation) {
-        "PORTRAIT", "ROTATE_90" -> 90f
-        "ROTATE_180" -> 180f
-        "ROTATE_270" -> 270f
-        else -> 0f
     }
 
     val resizeMode = when (liveState.scaleMode) {
@@ -297,7 +366,7 @@ fun TvDisplayClientScreen(
                     (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_MENU ||
                         event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_SETTINGS)
                 ) {
-                    viewModel.openAdminPinPrompt()
+                    viewModel.onGreenStarAdminClick(0)
                     true
                 } else {
                     false
@@ -309,22 +378,21 @@ fun TvDisplayClientScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    rotationZ = rotationDegrees
+                    rotationZ = videoRotateDegrees.toFloat()
                 },
             contentAlignment = Alignment.Center
         ) {
-            if (videos.isEmpty()) {
+            if (effectiveVideos.isEmpty()) {
                 StandbyPairingBroadcastCanvas(
-                    cmsServerUrl = cmsServerUrl,
                     isWebCmsConnected = isWebCmsConnected,
                     deviceName = deviceName,
                     pairingCode = pairingCode,
-                    deviceId = deviceId,
+                    screenOrientation = screenOrientation,
+                    videoRotateDegrees = videoRotateDegrees,
                     liveState = liveState,
-                    otaSlotState = otaSlotState,
+                    permissionsStatus = permissionsStatus,
                     lastSyncCycleCount = lastSyncCycleCount,
-                    onOpenAdminPin = { viewModel.openAdminPinPrompt() },
-                    onForceSync = { viewModel.forceImmediateSync() }
+                    onOpenAdminHubWithPin = { tabIdx -> viewModel.onGreenStarAdminClick(tabIdx) }
                 )
             } else {
                 AndroidView(
@@ -346,231 +414,162 @@ fun TvDisplayClientScreen(
             }
         }
 
-        // 2. Top-Left Minimal Telemetry HUD Pill (Shows Web CMS Connection Dot, Pairing Code, Offline Verified ✔, Orientation)
-        val activeVideo = videos.getOrNull(currentMediaIndex)
-        val isActiveVideoCached = activeVideo?.let {
-            it.isVerifiedCached || localManager.isFileVerifiedCached(it.localFileName)
-        } ?: false
-
-        Row(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .windowInsetsPadding(WindowInsets.safeDrawing)
-                .padding(16.dp)
-                .clip(RoundedCornerShape(50))
-                .background(ObsidianBackground.copy(alpha = 0.82f))
-                .border(1.dp, BorderSlate, RoundedCornerShape(50))
-                .padding(horizontal = 14.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Box(
+        // 2. Ultra-Minimal Top-Right Status Dot (Green = Live Synced, White = Disconnected) + Small Green Star (★)
+        if (!isAdminPanelOpen) {
+            Surface(
+                color = ObsidianBackground.copy(alpha = 0.72f),
+                shape = RoundedCornerShape(50),
+                shadowElevation = 6.dp,
                 modifier = Modifier
-                    .size(10.dp)
-                    .clip(CircleShape)
-                    .background(if (isWebCmsConnected) SignalGreen else AlertCrimson)
-            )
-            Text(
-                text = "PAIR: $pairingCode",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            if (videos.isNotEmpty()) {
-                Text(text = "•", color = TextMuted)
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text(
-                        text = activeVideo?.title ?: "Looping",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.widthIn(max = 160.dp)
+                    .align(Alignment.TopEnd)
+                    .windowInsetsPadding(WindowInsets.safeDrawing)
+                    .padding(top = 10.dp, end = 12.dp)
+                    .border(
+                        1.dp,
+                        if (isWebCmsConnected) SignalGreen.copy(alpha = 0.65f) else Color.White.copy(alpha = 0.45f),
+                        RoundedCornerShape(50)
                     )
-                    if (isActiveVideoCached) {
-                        Text(
-                            text = "✔",
-                            color = SignalGreen,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
-                        )
-                    }
+                    .clickable { viewModel.onGreenStarAdminClick(0) }
+                    .testTag("top_right_green_star_admin_button")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    // Minimal Connection Status Dot: Green when connected & syncing live, White when disconnected
+                    Box(
+                        modifier = Modifier
+                            .size(9.dp)
+                            .clip(CircleShape)
+                            .background(if (isWebCmsConnected) SignalGreen else Color.White)
+                            .testTag("minimal_sync_status_dot")
+                    )
+
+                    // Small Green Star (★) to open Built-In PIN Keypad & Admin Hub
+                    Icon(
+                        imageVector = Icons.Default.Star,
+                        contentDescription = "Open Admin Password Keypad",
+                        tint = SignalGreen,
+                        modifier = Modifier.size(18.dp)
+                    )
                 }
             }
-            Text(
-                text = "• ${liveState.orientation} (${liveState.scaleMode})",
-                style = MaterialTheme.typography.labelMedium,
-                color = ElectricCyan
-            )
-            Icon(
-                imageVector = if (liveState.isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
-                contentDescription = if (liveState.isMuted) "Audio Muted" else "Audio Active",
-                tint = if (liveState.isMuted) WatchdogAmber else SignalGreen,
-                modifier = Modifier.size(16.dp)
-            )
         }
 
-        // 3. 600KB Chunk Sync / Background OTA Progress Banner
+        // 3. Compact Offline Download / OTA Progress Toast Banner (Bottom-Left)
         AnimatedVisibility(
-            visible = chunkTelemetry.isActive || otaProgressPercent != null || otaSlotState.otaStatus == "ROLLED_BACK",
+            visible = !isAdminPanelOpen && (chunkTelemetry.isActive || otaProgressPercent != null || otaSlotState.otaStatus == "ROLLED_BACK"),
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .windowInsetsPadding(WindowInsets.safeDrawing)
-                .padding(16.dp)
+                .padding(14.dp)
         ) {
             Card(
                 colors = CardDefaults.cardColors(
                     containerColor = if (otaSlotState.otaStatus == "ROLLED_BACK") {
-                        AlertCrimson.copy(alpha = 0.92f)
+                        AlertCrimson.copy(alpha = 0.94f)
                     } else {
-                        ControlDeckSurface.copy(alpha = 0.92f)
+                        ControlDeckSurface.copy(alpha = 0.94f)
                     }
                 ),
                 shape = RoundedCornerShape(14.dp),
                 modifier = Modifier
-                    .widthIn(max = 440.dp)
+                    .widthIn(max = 380.dp)
                     .border(
                         1.dp,
                         if (otaSlotState.otaStatus == "ROLLED_BACK") AlertCrimson else ElectricCyan,
                         RoundedCornerShape(14.dp)
                     )
             ) {
-                Column(modifier = Modifier.padding(14.dp)) {
+                Column(modifier = Modifier.padding(12.dp)) {
                     if (chunkTelemetry.isActive) {
-                        Text(
-                            text = "${chunkTelemetry.label} — Chunk ${chunkTelemetry.currentChunk}/${chunkTelemetry.totalChunks} (600KB)",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = ElectricCyan
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = chunkTelemetry.label,
+                                style = MaterialTheme.typography.labelLarge,
+                                color = ElectricCyan,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                text = "${chunkTelemetry.progressPercent}%",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = SignalGreen
+                            )
+                        }
                         Spacer(modifier = Modifier.height(6.dp))
-                        val pct = if (chunkTelemetry.totalChunks > 0) {
-                            chunkTelemetry.currentChunk.toFloat() / chunkTelemetry.totalChunks.toFloat()
-                        } else 0.5f
                         LinearProgressIndicator(
-                            progress = { pct.coerceIn(0f, 1f) },
+                            progress = { (chunkTelemetry.progressPercent / 100f).coerceIn(0f, 1f) },
                             modifier = Modifier.fillMaxWidth(),
                             color = ElectricCyan,
                             trackColor = BorderSlate
                         )
                     } else {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = if (otaSlotState.otaStatus == "ROLLED_BACK") {
-                                    Icons.Default.SettingsBackupRestore
-                                } else {
-                                    Icons.Default.SystemUpdateAlt
-                                },
-                                contentDescription = "OTA Status",
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = if (otaSlotState.otaStatus == "ROLLED_BACK") {
-                                    "OTA AUTO-ROLLBACK EXECUTED (${otaSlotState.activeSlot})"
-                                } else {
-                                    "BACKGROUND OTA UPDATE (${otaSlotState.otaStatus})"
-                                },
-                                style = MaterialTheme.typography.labelLarge,
-                                color = Color.White
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(6.dp))
                         Text(
                             text = otaSlotState.lastOtaMessage,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = Color.White.copy(alpha = 0.9f)
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.White
                         )
-                        if (otaProgressPercent != null) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            LinearProgressIndicator(
-                                progress = { (otaProgressPercent / 100f).coerceIn(0f, 1f) },
-                                modifier = Modifier.fillMaxWidth(),
-                                color = ElectricCyan,
-                                trackColor = BorderSlate
-                            )
-                        }
                     }
                 }
             }
         }
 
-        // 4. Hidden 5-Tap Top-Right Corner Gesture Zone (96dp touch target for Kiosk Admin Unlock)
-        val cornerInteraction = remember { MutableInteractionSource() }
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .windowInsetsPadding(WindowInsets.safeDrawing)
-                .size(96.dp)
-                .clickable(
-                    interactionSource = cornerInteraction,
-                    indication = null,
-                    onClick = { viewModel.onCornerSecretTap() }
-                )
-                .testTag("hidden_admin_corner_tap_zone"),
-            contentAlignment = Alignment.TopEnd
+        // 4. Full-Screen Admin Hub with Top Back Button & Bottom Navigation Bar
+        AnimatedVisibility(
+            visible = isAdminPanelOpen,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.fillMaxSize()
         ) {
-            Surface(
-                color = ObsidianBackground.copy(alpha = 0.65f),
-                shape = RoundedCornerShape(50),
-                modifier = Modifier
-                    .padding(16.dp)
-                    .border(1.dp, BorderSlate.copy(alpha = 0.6f), RoundedCornerShape(50))
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Icon(
-                        imageVector = if (liveState.kioskLocked) Icons.Default.Lock else Icons.Default.LockOpen,
-                        contentDescription = "Tap 5 times for Admin Panel",
-                        tint = TextSecondary,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Text(
-                        text = "5x PIN",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = TextSecondary
-                    )
-                }
-            }
-        }
-
-        // 5. PIN Verification Dialog
-        if (isPinDialogVisible) {
-            AdminPinVerificationDialog(
-                pinError = pinError,
-                onVerifyPin = { entered -> viewModel.verifyAdminPin(entered) },
-                onDismiss = { viewModel.dismissAdminPinPrompt() }
-            )
-        }
-
-        // 6. Protected Admin Settings Panel Overlay
-        if (isAdminPanelOpen) {
-            ProtectedAdminSettingsModal(
+            AdminFullScreenHub(
+                selectedTab = selectedSidebarTab,
+                onSelectTab = { viewModel.selectSidebarTab(it) },
+                permissionsStatus = permissionsStatus,
+                onRefreshPermissions = {
+                    permissionsStatus = KioskPermissionHelper.checkAllPermissions(context)
+                },
                 cmsServerUrl = cmsServerUrl,
                 isWebCmsConnected = isWebCmsConnected,
+                isPairedWithCms = isPairedWithCms,
                 deviceName = deviceName,
                 pairingCode = pairingCode,
                 assignedVideoId = assignedVideoId,
+                screenOrientation = screenOrientation,
+                videoRotateDegrees = videoRotateDegrees,
                 liveState = liveState,
                 videos = videos,
+                allCloudVideos = allCloudVideos,
+                forcedOfflineVideoId = forcedOfflineVideoId,
+                chunkTelemetry = chunkTelemetry,
                 otaSlotState = otaSlotState,
                 diagnosticLogs = diagnosticLogs,
+                lastSyncCycleCount = lastSyncCycleCount,
                 localManager = localManager,
-                onUpdateCmsUrl = { viewModel.updateCmsServerUrl(it) },
-                onUpdateDeviceName = { viewModel.updateDeviceName(it) },
+                onPairNowWithWebDashboard = { code, name, url ->
+                    viewModel.pairNowWithWebDashboard(code, name, url)
+                },
                 onRegeneratePairingCode = { viewModel.regenerateSixDigitPairingCode() },
                 onForceSync = { viewModel.forceImmediateSync() },
-                onSetOrientation = { viewModel.setOrientation(it) },
+                onSetScreenOrientation = { viewModel.setScreenOrientationMode(it) },
+                onSetVideoRotationAngle = { viewModel.setVideoRotationAngle(it) },
+                onRotateVideoByDelta = { delta -> viewModel.rotateVideoByDelta(delta) },
                 onSetScaleMode = { viewModel.setScaleMode(it) },
                 onToggleMute = { viewModel.toggleAudioMute(it) },
                 onToggleKioskLock = { viewModel.toggleKioskLock(it) },
+                onSaveSettings = { viewModel.saveAllDisplayAndRotationSettings() },
+                onDownloadCloudVideoOffline = { viewModel.downloadCloudVideoForOfflineView(it) },
+                onDownloadAllCloudVideosOffline = { viewModel.downloadAllCloudVideosOffline() },
+                onPlayVideoOfflineNow = { viewModel.playVideoOfflineNow(it) },
+                onClearForcedOfflineVideo = { viewModel.clearForcedSingleOfflineVideo() },
                 onIngestLocalVideo = { uri, title -> viewModel.ingestLocalVideoForOfflineCache(uri, title) },
                 onDeleteVideo = { viewModel.deleteVideoFromPlaylist(it) },
                 onManualOtaRollback = { viewModel.triggerManualOtaRollback() },
@@ -578,21 +577,30 @@ fun TvDisplayClientScreen(
                 onClose = { viewModel.closeAdminPanel() }
             )
         }
+
+        // 5. Built-In Password Keypad Modal (Opens when tapping the ★ Green Star)
+        if (isPinDialogVisible) {
+            BuiltInKeypadPasswordDialog(
+                pinError = pinError,
+                expectedPinLength = 4,
+                onVerifyPin = { entered -> viewModel.verifyAdminPin(entered) },
+                onDismiss = { viewModel.dismissAdminPinPrompt() }
+            )
+        }
     }
 }
 
 @Composable
 private fun StandbyPairingBroadcastCanvas(
-    cmsServerUrl: String,
     isWebCmsConnected: Boolean,
     deviceName: String,
     pairingCode: String,
-    deviceId: String,
+    screenOrientation: String,
+    videoRotateDegrees: Int,
     liveState: LiveState,
-    otaSlotState: OtaSlotState,
+    permissionsStatus: KioskPermissionsStatus,
     lastSyncCycleCount: Long,
-    onOpenAdminPin: () -> Unit,
-    onForceSync: () -> Unit
+    onOpenAdminHubWithPin: (Int) -> Unit
 ) {
     Box(
         modifier = Modifier
@@ -634,16 +642,17 @@ private fun StandbyPairingBroadcastCanvas(
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .widthIn(max = 580.dp)
-                .padding(24.dp)
+                .widthIn(max = 540.dp)
+                .padding(20.dp)
                 .border(1.5.dp, ElectricCyan.copy(alpha = 0.5f), RoundedCornerShape(24.dp)),
             shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = ControlDeckSurface.copy(alpha = 0.94f))
+            colors = CardDefaults.cardColors(containerColor = ControlDeckSurface.copy(alpha = 0.95f))
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(26.dp),
+                    .verticalScroll(rememberScrollState())
+                    .padding(22.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Row(
@@ -657,7 +666,7 @@ private fun StandbyPairingBroadcastCanvas(
                         modifier = Modifier.size(22.dp)
                     )
                     Text(
-                        text = "ANDROID TV & DIGITAL DISPLAY CLIENT",
+                        text = "PULSECAST ANDROID TV DISPLAY",
                         style = MaterialTheme.typography.labelLarge,
                         color = ElectricCyan
                     )
@@ -665,13 +674,12 @@ private fun StandbyPairingBroadcastCanvas(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                // Web CMS Connection Pill
                 Surface(
-                    color = if (isWebCmsConnected) SignalGreen.copy(alpha = 0.15f) else WatchdogAmber.copy(alpha = 0.15f),
+                    color = if (isWebCmsConnected) SignalGreen.copy(alpha = 0.15f) else Color.White.copy(alpha = 0.1f),
                     shape = RoundedCornerShape(50),
                     modifier = Modifier.border(
                         1.dp,
-                        if (isWebCmsConnected) SignalGreen.copy(alpha = 0.4f) else WatchdogAmber.copy(alpha = 0.4f),
+                        if (isWebCmsConnected) SignalGreen.copy(alpha = 0.45f) else Color.White.copy(alpha = 0.35f),
                         RoundedCornerShape(50)
                     )
                 ) {
@@ -680,124 +688,90 @@ private fun StandbyPairingBroadcastCanvas(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Icon(
-                            imageVector = if (isWebCmsConnected) Icons.Default.CloudDone else Icons.Default.CloudOff,
-                            contentDescription = null,
-                            tint = if (isWebCmsConnected) SignalGreen else WatchdogAmber,
-                            modifier = Modifier.size(15.dp)
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(if (isWebCmsConnected) SignalGreen else Color.White)
                         )
                         Text(
                             text = if (isWebCmsConnected) {
-                                "LIVE CONNECTED TO $cmsServerUrl"
+                                "LIVE SYNC (2.0s)"
                             } else {
-                                "POLLING WEB CMS: $cmsServerUrl"
+                                "OFFLINE STANDBY"
                             },
                             style = MaterialTheme.typography.labelMedium,
-                            color = if (isWebCmsConnected) SignalGreen else WatchdogAmber
+                            color = if (isWebCmsConnected) SignalGreen else Color.White
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
                 Text(
                     text = deviceName,
-                    style = MaterialTheme.typography.headlineLarge,
+                    style = MaterialTheme.typography.headlineMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                     textAlign = TextAlign.Center
                 )
 
-                Text(
-                    text = "Controlled remotely from your Web CMS Dashboard ($cmsServerUrl). Enter this 6-digit pairing code in the Web Dashboard to control orientation, scale, and video playback live.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(top = 6.dp)
-                )
+                Spacer(modifier = Modifier.height(14.dp))
 
-                Spacer(modifier = Modifier.height(18.dp))
-
-                // 6-Digit Pairing Code Display Box
                 Surface(
                     color = ObsidianBackground,
                     shape = RoundedCornerShape(18.dp),
                     modifier = Modifier
                         .border(1.dp, BorderSlate, RoundedCornerShape(18.dp))
-                        .padding(horizontal = 28.dp, vertical = 14.dp)
+                        .padding(horizontal = 24.dp, vertical = 12.dp)
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            text = "6-DIGIT SCREEN PAIRING CODE",
+                            text = "6-DIGIT PAIRING CODE",
                             style = MaterialTheme.typography.labelMedium,
                             color = TextSecondary
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
                             text = pairingCode.chunked(3).joinToString(" "),
-                            style = MaterialTheme.typography.displayLarge,
+                            style = MaterialTheme.typography.displayMedium,
                             color = ElectricCyan,
-                            letterSpacing = 6.sp
+                            letterSpacing = 5.sp
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
-                    TelemetryStatChip(label = "2.5s Sync Polls", value = "#$lastSyncCycleCount")
-                    TelemetryStatChip(label = "Orientation", value = liveState.orientation)
-                    TelemetryStatChip(
-                        label = "OTA Slot",
-                        value = "${otaSlotState.activeSlot} (v${otaSlotState.installedVersionName})"
-                    )
+                    TelemetryStatChip(label = "2.0s Sync", value = "#$lastSyncCycleCount")
+                    TelemetryStatChip(label = "24x7 Perms", value = "${permissionsStatus.grantedCount}/5")
+                    TelemetryStatChip(label = "Display", value = "$screenOrientation (${videoRotateDegrees}°)")
                 }
 
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                Button(
+                    onClick = { onOpenAdminHubWithPin(0) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("standby_open_admin_star_button"),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = SignalGreen,
+                        contentColor = ObsidianBackground
+                    )
                 ) {
-                    OutlinedButton(
-                        onClick = onOpenAdminPin,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(48.dp)
-                            .testTag("open_admin_pin_button"),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.AdminPanelSettings,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Admin Panel (PIN)")
-                    }
-
-                    Button(
-                        onClick = onForceSync,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(48.dp)
-                            .testTag("sync_web_cms_now_button"),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ElectricCyan,
-                            contentColor = ObsidianBackground
-                        )
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Sync Web CMS Now", fontWeight = FontWeight.Bold)
-                    }
+                    Icon(
+                        imageVector = Icons.Default.Star,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Unlock Admin Settings (PIN: 1234)", fontWeight = FontWeight.Bold, maxLines = 1)
                 }
             }
         }
@@ -809,7 +783,7 @@ private fun TelemetryStatChip(label: String, value: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
             text = label,
-            style = MaterialTheme.typography.labelMedium,
+            style = MaterialTheme.typography.labelSmall,
             color = TextMuted
         )
         Text(
@@ -820,432 +794,955 @@ private fun TelemetryStatChip(label: String, value: String) {
     }
 }
 
+// ----------------------------------------------------------------------------
+// Built-In On-Screen Password Keypad Modal (Opens when tapping the ★ Green Star)
+// ----------------------------------------------------------------------------
+
 @Composable
-private fun AdminPinVerificationDialog(
+private fun BuiltInKeypadPasswordDialog(
     pinError: String?,
+    expectedPinLength: Int = 4,
     onVerifyPin: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
     var enteredPin by remember { mutableStateOf("") }
 
+    fun appendDigit(digit: String) {
+        if (enteredPin.length < 8) {
+            val next = enteredPin + digit
+            enteredPin = next
+            if (next.length == expectedPinLength) {
+                onVerifyPin(next)
+            }
+        }
+    }
+
     Dialog(onDismissRequest = onDismiss) {
         Card(
-            shape = RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(24.dp),
             colors = CardDefaults.cardColors(containerColor = ControlDeckSurface),
             modifier = Modifier
                 .fillMaxWidth()
-                .border(1.dp, ElectricCyan.copy(alpha = 0.6f), RoundedCornerShape(22.dp))
+                .widthIn(max = 380.dp)
+                .border(1.5.dp, SignalGreen.copy(alpha = 0.7f), RoundedCornerShape(24.dp))
+                .onKeyEvent { event ->
+                    if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
+                        when (val code = event.nativeKeyEvent.keyCode) {
+                            in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> {
+                                appendDigit((code - KeyEvent.KEYCODE_0).toString())
+                                true
+                            }
+                            in KeyEvent.KEYCODE_NUMPAD_0..KeyEvent.KEYCODE_NUMPAD_9 -> {
+                                appendDigit((code - KeyEvent.KEYCODE_NUMPAD_0).toString())
+                                true
+                            }
+                            KeyEvent.KEYCODE_DEL -> {
+                                if (enteredPin.isNotEmpty()) {
+                                    enteredPin = enteredPin.dropLast(1)
+                                }
+                                true
+                            }
+                            KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_DPAD_CENTER -> {
+                                onVerifyPin(enteredPin)
+                                true
+                            }
+                            else -> false
+                        }
+                    } else {
+                        false
+                    }
+                }
         ) {
             Column(
-                modifier = Modifier.padding(24.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Icon(
-                    imageVector = Icons.Default.AdminPanelSettings,
-                    contentDescription = "Protected Admin Access",
-                    tint = ElectricCyan,
-                    modifier = Modifier.size(36.dp)
-                )
-                Spacer(modifier = Modifier.height(10.dp))
+                // Top Row with Back button and Star badge
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    TextButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.testTag("pin_dialog_back_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Back", color = TextSecondary)
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Star,
+                            contentDescription = null,
+                            tint = SignalGreen,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = "Admin Lock",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(48.dp))
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
                 Text(
-                    text = "Protected Admin Settings",
-                    style = MaterialTheme.typography.headlineMedium
-                )
-                Text(
-                    text = "Enter operator PIN code (Default: 1234) to configure Web CMS URL, orientation overrides, offline cache, and OTA rollback.",
-                    style = MaterialTheme.typography.bodyMedium,
+                    text = "Enter Password on Built-In Keypad (Default: 1234)",
+                    style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(top = 4.dp)
+                    textAlign = TextAlign.Center
                 )
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
-                OutlinedTextField(
-                    value = enteredPin,
-                    onValueChange = { if (it.length <= 8) enteredPin = it.filter { ch -> ch.isDigit() } },
-                    label = { Text("Operator PIN") },
-                    singleLine = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("admin_pin_input")
-                )
+                // 4-Slot PIN Display Box
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    for (i in 0 until 4) {
+                        val isFilled = i < enteredPin.length
+                        Box(
+                            modifier = Modifier
+                                .size(50.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(ObsidianBackground)
+                                .border(
+                                    1.5.dp,
+                                    if (isFilled) SignalGreen else BorderSlate,
+                                    RoundedCornerShape(14.dp)
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = if (isFilled) "●" else "",
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = SignalGreen
+                            )
+                        }
+                    }
+                }
 
                 if (!pinError.isNullOrBlank()) {
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = pinError,
                         color = AlertCrimson,
-                        style = MaterialTheme.typography.bodyMedium
+                        style = MaterialTheme.typography.labelMedium,
+                        textAlign = TextAlign.Center
                     )
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                Row(
+                // Built-In 3x4 Numeric Keypad Grid (No OS keyboard required!)
+                val keypadRows = listOf(
+                    listOf("1", "2", "3"),
+                    listOf("4", "5", "6"),
+                    listOf("7", "8", "9"),
+                    listOf("CLR", "0", "DEL")
+                )
+
+                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    TextButton(
-                        onClick = onDismiss,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Cancel")
+                    keypadRows.forEach { rowItems ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            rowItems.forEach { keyLabel ->
+                                Surface(
+                                    color = when (keyLabel) {
+                                        "CLR" -> AlertCrimson.copy(alpha = 0.16f)
+                                        "DEL" -> WatchdogAmber.copy(alpha = 0.16f)
+                                        else -> ObsidianBackground
+                                    },
+                                    shape = RoundedCornerShape(14.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(52.dp)
+                                        .border(
+                                            1.dp,
+                                            when (keyLabel) {
+                                                "CLR" -> AlertCrimson.copy(alpha = 0.45f)
+                                                "DEL" -> WatchdogAmber.copy(alpha = 0.45f)
+                                                else -> BorderSlate
+                                            },
+                                            RoundedCornerShape(14.dp)
+                                        )
+                                        .clickable {
+                                            when (keyLabel) {
+                                                "CLR" -> enteredPin = ""
+                                                "DEL" -> if (enteredPin.isNotEmpty()) {
+                                                    enteredPin = enteredPin.dropLast(1)
+                                                }
+                                                else -> appendDigit(keyLabel)
+                                            }
+                                        }
+                                        .testTag("keypad_btn_$keyLabel")
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        if (keyLabel == "DEL") {
+                                            Icon(
+                                                imageVector = Icons.AutoMirrored.Filled.Backspace,
+                                                contentDescription = "Backspace",
+                                                tint = WatchdogAmber,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        } else {
+                                            Text(
+                                                text = keyLabel,
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Bold,
+                                                color = when (keyLabel) {
+                                                    "CLR" -> AlertCrimson
+                                                    else -> Color.White
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
-                    Button(
-                        onClick = { onVerifyPin(enteredPin) },
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("verify_pin_submit_button"),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ElectricCyan,
-                            contentColor = ObsidianBackground
-                        )
-                    ) {
-                        Text("Unlock Admin", fontWeight = FontWeight.Bold)
-                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Button(
+                    onClick = { onVerifyPin(enteredPin) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("verify_pin_submit_button"),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = SignalGreen,
+                        contentColor = ObsidianBackground
+                    )
+                ) {
+                    Icon(imageVector = Icons.Default.LockOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Unlock Admin Settings", fontWeight = FontWeight.Bold)
                 }
             }
         }
     }
 }
 
+// ----------------------------------------------------------------------------
+// Full-Screen Admin Hub with Top Back Button & Bottom Navigation Bar
+// ----------------------------------------------------------------------------
+
+private data class BottomNavPageItem(
+    val index: Int,
+    val label: String,
+    val icon: ImageVector
+)
+
 @Composable
-private fun ProtectedAdminSettingsModal(
+private fun AdminFullScreenHub(
+    selectedTab: Int,
+    onSelectTab: (Int) -> Unit,
+    permissionsStatus: KioskPermissionsStatus,
+    onRefreshPermissions: () -> Unit,
     cmsServerUrl: String,
     isWebCmsConnected: Boolean,
+    isPairedWithCms: Boolean,
     deviceName: String,
     pairingCode: String,
     assignedVideoId: String,
+    screenOrientation: String,
+    videoRotateDegrees: Int,
     liveState: LiveState,
     videos: List<PlaylistVideo>,
+    allCloudVideos: List<PlaylistVideo>,
+    forcedOfflineVideoId: String?,
+    chunkTelemetry: ChunkTransferTelemetry,
     otaSlotState: OtaSlotState,
     diagnosticLogs: List<DiagnosticLogEntry>,
+    lastSyncCycleCount: Long,
     localManager: ChunkedStorageAndOtaManager,
-    onUpdateCmsUrl: (String) -> Unit,
-    onUpdateDeviceName: (String) -> Unit,
+    onPairNowWithWebDashboard: (String, String, String) -> Unit,
     onRegeneratePairingCode: () -> Unit,
     onForceSync: () -> Unit,
-    onSetOrientation: (String) -> Unit,
+    onSetScreenOrientation: (String) -> Unit,
+    onSetVideoRotationAngle: (Int) -> Unit,
+    onRotateVideoByDelta: (Int) -> Unit,
     onSetScaleMode: (String) -> Unit,
     onToggleMute: (Boolean) -> Unit,
     onToggleKioskLock: (Boolean) -> Unit,
+    onSaveSettings: () -> Unit,
+    onDownloadCloudVideoOffline: (PlaylistVideo) -> Unit,
+    onDownloadAllCloudVideosOffline: () -> Unit,
+    onPlayVideoOfflineNow: (PlaylistVideo) -> Unit,
+    onClearForcedOfflineVideo: () -> Unit,
     onIngestLocalVideo: (Uri, String) -> Unit,
     onDeleteVideo: (PlaylistVideo) -> Unit,
     onManualOtaRollback: () -> Unit,
     onClearLogs: () -> Unit,
     onClose: () -> Unit
 ) {
-    var selectedTab by remember { mutableIntStateOf(0) }
-    val tabs = listOf(
-        "Web CMS & Display",
-        "Offline Cache (${videos.size})",
-        "OTA & Rollback",
-        "Logs (${diagnosticLogs.size})"
+    val combinedVideos = remember(videos, allCloudVideos) {
+        (allCloudVideos + videos).distinctBy { it.id }
+    }
+
+    val navItems = listOf(
+        BottomNavPageItem(0, "Rotate", Icons.Default.ScreenRotation),
+        BottomNavPageItem(1, "Pair", Icons.Default.Link),
+        BottomNavPageItem(2, "Videos", Icons.Default.CloudDownload),
+        BottomNavPageItem(3, "24x7 Boot", Icons.Default.Security),
+        BottomNavPageItem(4, "OTA", Icons.Default.SystemUpdateAlt)
     )
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(ObsidianBackground.copy(alpha = 0.88f))
-            .windowInsetsPadding(WindowInsets.safeDrawing)
-            .padding(16.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .widthIn(max = 840.dp)
-                .fillMaxHeight(0.92f)
-                .border(1.dp, BorderSlate, RoundedCornerShape(22.dp)),
-            shape = RoundedCornerShape(22.dp),
-            colors = CardDefaults.cardColors(containerColor = ControlDeckSurface)
-        ) {
-            Column(modifier = Modifier.fillMaxSize()) {
+    Scaffold(
+        containerColor = ObsidianBackground,
+        contentWindowInsets = WindowInsets.safeDrawing,
+        topBar = {
+            Surface(
+                color = ControlDeckSurfaceVariant,
+                shadowElevation = 6.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.safeDrawing)
+            ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(ControlDeckSurfaceVariant)
-                        .padding(horizontal = 20.dp, vertical = 14.dp),
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    // Prominent Top-Left Back Button to return to Player
+                    Surface(
+                        color = ObsidianBackground,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .border(1.dp, ElectricCyan.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                            .clickable { onClose() }
+                            .testTag("admin_hub_back_button")
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.AdminPanelSettings,
-                            contentDescription = null,
-                            tint = ElectricCyan
-                        )
-                        Column {
-                            Text(
-                                text = "TV Client Protected Admin Settings",
-                                style = MaterialTheme.typography.titleLarge
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back to Video Player",
+                                tint = ElectricCyan,
+                                modifier = Modifier.size(18.dp)
                             )
                             Text(
-                                text = "Code: $pairingCode • Web CMS: $cmsServerUrl (${if (isWebCmsConnected) "CONNECTED" else "OFFLINE"})",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = if (isWebCmsConnected) SignalGreen else WatchdogAmber
+                                text = "Back",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = ElectricCyan,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1
                             )
                         }
                     }
 
-                    IconButton(onClick = onClose) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Close Admin Panel"
+                    // Center Status Dot (Green = Connected, White = Offline) + Pairing Code
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.weight(1f, fill = false).padding(horizontal = 8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(if (isWebCmsConnected) SignalGreen else Color.White)
                         )
+                        Column {
+                            Text(
+                                text = "Admin Settings • Code: $pairingCode",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = if (isWebCmsConnected) {
+                                    "Live 2s Sync Connected • ${screenOrientation} ${videoRotateDegrees}° (${liveState.scaleMode})"
+                                } else {
+                                    "Offline Mode • ${screenOrientation} ${videoRotateDegrees}° (${liveState.scaleMode})"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isWebCmsConnected) SignalGreen else Color.White.copy(alpha = 0.75f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    // Quick Save Button on Top Right
+                    Button(
+                        onClick = onSaveSettings,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = SignalGreen,
+                            contentColor = ObsidianBackground
+                        ),
+                        modifier = Modifier
+                            .height(38.dp)
+                            .testTag("admin_top_save_button")
+                    ) {
+                        Icon(imageVector = Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Save", fontWeight = FontWeight.Bold, maxLines = 1)
                     }
                 }
-
-                TabRow(
-                    selectedTabIndex = selectedTab,
-                    containerColor = ControlDeckSurfaceVariant
-                ) {
-                    tabs.forEachIndexed { index, title ->
-                        Tab(
-                            selected = selectedTab == index,
-                            onClick = { selectedTab = index },
-                            text = {
-                                Text(
-                                    text = title,
-                                    style = MaterialTheme.typography.labelLarge,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        )
-                    }
+            }
+        },
+        bottomBar = {
+            NavigationBar(
+                containerColor = ControlDeckSurfaceVariant,
+                tonalElevation = 8.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .border(1.dp, BorderSlate)
+            ) {
+                navItems.forEach { item ->
+                    val selected = selectedTab == item.index
+                    NavigationBarItem(
+                        selected = selected,
+                        onClick = { onSelectTab(item.index) },
+                        icon = {
+                            Icon(
+                                imageVector = item.icon,
+                                contentDescription = item.label,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        },
+                        label = {
+                            Text(
+                                text = item.label,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                maxLines = 1
+                            )
+                        },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = ObsidianBackground,
+                            selectedTextColor = SignalGreen,
+                            indicatorColor = SignalGreen,
+                            unselectedIconColor = TextSecondary,
+                            unselectedTextColor = TextSecondary
+                        ),
+                        modifier = Modifier.testTag("bottom_nav_tab_${item.index}")
+                    )
                 }
-
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .padding(20.dp)
-                ) {
-                    when (selectedTab) {
-                        0 -> AdminDisplayAndKioskTab(
-                            cmsServerUrl = cmsServerUrl,
-                            deviceName = deviceName,
-                            pairingCode = pairingCode,
-                            assignedVideoId = assignedVideoId,
-                            liveState = liveState,
-                            onUpdateCmsUrl = onUpdateCmsUrl,
-                            onUpdateDeviceName = onUpdateDeviceName,
-                            onRegeneratePairingCode = onRegeneratePairingCode,
-                            onForceSync = onForceSync,
-                            onSetOrientation = onSetOrientation,
-                            onSetScaleMode = onSetScaleMode,
-                            onToggleMute = onToggleMute,
-                            onToggleKioskLock = onToggleKioskLock
-                        )
-                        1 -> AdminPlaylistManagerTab(
-                            videos = videos,
-                            localManager = localManager,
-                            onIngestLocalVideo = onIngestLocalVideo,
-                            onDeleteVideo = onDeleteVideo
-                        )
-                        2 -> AdminOtaRollbackTab(
-                            otaSlotState = otaSlotState,
-                            onManualOtaRollback = onManualOtaRollback
-                        )
-                        3 -> AdminDiagnosticLogsTab(
-                            logs = diagnosticLogs,
-                            onClearLogs = onClearLogs
-                        )
-                    }
+            }
+        }
+    ) { innerPadding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            contentAlignment = Alignment.TopCenter
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .widthIn(max = 760.dp)
+            ) {
+                when (selectedTab) {
+                    0 -> AdminOrientationAndRotatePage(
+                        screenOrientation = screenOrientation,
+                        videoRotateDegrees = videoRotateDegrees,
+                        liveState = liveState,
+                        onSetScreenOrientation = onSetScreenOrientation,
+                        onSetVideoRotationAngle = onSetVideoRotationAngle,
+                        onRotateVideoByDelta = onRotateVideoByDelta,
+                        onSetScaleMode = onSetScaleMode,
+                        onToggleMute = onToggleMute,
+                        onToggleKioskLock = onToggleKioskLock,
+                        onSaveSettings = onSaveSettings
+                    )
+                    1 -> AdminPairingAndSyncPage(
+                        cmsServerUrl = cmsServerUrl,
+                        isWebCmsConnected = isWebCmsConnected,
+                        deviceName = deviceName,
+                        pairingCode = pairingCode,
+                        lastSyncCycleCount = lastSyncCycleCount,
+                        onPairNow = onPairNowWithWebDashboard,
+                        onRegenerateCode = onRegeneratePairingCode,
+                        onForceSync = onForceSync
+                    )
+                    2 -> AdminCloudAndOfflineVideosPage(
+                        videos = combinedVideos,
+                        forcedOfflineVideoId = forcedOfflineVideoId,
+                        chunkTelemetry = chunkTelemetry,
+                        localManager = localManager,
+                        onDownloadCloudVideoOffline = onDownloadCloudVideoOffline,
+                        onDownloadAllCloudVideosOffline = onDownloadAllCloudVideosOffline,
+                        onPlayVideoOfflineNow = onPlayVideoOfflineNow,
+                        onClearForcedOfflineVideo = onClearForcedOfflineVideo,
+                        onIngestLocalVideo = onIngestLocalVideo,
+                        onDeleteVideo = onDeleteVideo
+                    )
+                    3 -> Admin24x7PermissionsAndBootPage(
+                        permissionsStatus = permissionsStatus,
+                        onRefreshPermissions = onRefreshPermissions
+                    )
+                    4 -> AdminOtaAndLogsPage(
+                        otaSlotState = otaSlotState,
+                        logs = diagnosticLogs,
+                        onManualOtaRollback = onManualOtaRollback,
+                        onClearLogs = onClearLogs
+                    )
                 }
             }
         }
     }
 }
 
+// ----------------------------------------------------------------------------
+// PAGE 0: Orientation, Video Rotate (+90° / -90° / 0° / 90° / 180° / 270°) & Scale Mode
+// ----------------------------------------------------------------------------
+
 @kotlin.OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AdminDisplayAndKioskTab(
-    cmsServerUrl: String,
-    deviceName: String,
-    pairingCode: String,
-    assignedVideoId: String,
+private fun AdminOrientationAndRotatePage(
+    screenOrientation: String,
+    videoRotateDegrees: Int,
     liveState: LiveState,
-    onUpdateCmsUrl: (String) -> Unit,
-    onUpdateDeviceName: (String) -> Unit,
-    onRegeneratePairingCode: () -> Unit,
-    onForceSync: () -> Unit,
-    onSetOrientation: (String) -> Unit,
+    onSetScreenOrientation: (String) -> Unit,
+    onSetVideoRotationAngle: (Int) -> Unit,
+    onRotateVideoByDelta: (Int) -> Unit,
     onSetScaleMode: (String) -> Unit,
     onToggleMute: (Boolean) -> Unit,
-    onToggleKioskLock: (Boolean) -> Unit
+    onToggleKioskLock: (Boolean) -> Unit,
+    onSaveSettings: () -> Unit
 ) {
-    var urlInput by remember(cmsServerUrl) { mutableStateOf(cmsServerUrl) }
-    var nameInput by remember(deviceName) { mutableStateOf(deviceName) }
-    val orientations = listOf("LANDSCAPE", "PORTRAIT", "ROTATE_90", "ROTATE_180", "ROTATE_270")
-    val scales = listOf("FILL", "FIT", "ZOOM")
+    val rotationAngles = listOf(0, 90, 180, 270)
+    val scaleOptions = listOf(
+        Triple("FIT", "Scale to Fit", "Shows full video without cropping"),
+        Triple("FILL", "Full Screen", "Fills entire TV screen edge-to-edge"),
+        Triple("ZOOM", "Zoom Crop", "Centers & zooms video")
+    )
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text(
-            text = "Web CMS Dashboard Connection (2.5s Live Sync)",
-            style = MaterialTheme.typography.titleMedium,
-            color = ElectricCyan
-        )
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
+        // 1. Video Rotate Card (+90° / -90° / 0° / 90° / 180° / 270°)
+        Card(
+            colors = CardDefaults.cardColors(containerColor = ControlDeckSurface),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, BorderSlate, RoundedCornerShape(16.dp))
         ) {
-            OutlinedTextField(
-                value = urlInput,
-                onValueChange = { urlInput = it },
-                label = { Text("Web CMS Server URL") },
-                singleLine = true,
-                modifier = Modifier.weight(1f)
-            )
-            Button(
-                onClick = { onUpdateCmsUrl(urlInput) },
-                modifier = Modifier.height(52.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = ElectricCyan,
-                    contentColor = ObsidianBackground
-                )
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text("Save & Sync", fontWeight = FontWeight.Bold)
-            }
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            OutlinedTextField(
-                value = nameInput,
-                onValueChange = { nameInput = it },
-                label = { Text("TV Screen Name (Shown in Web CMS)") },
-                singleLine = true,
-                modifier = Modifier.weight(1f)
-            )
-            OutlinedButton(
-                onClick = { onUpdateDeviceName(nameInput) },
-                modifier = Modifier.height(52.dp)
-            ) {
-                Text("Rename TV")
-            }
-            OutlinedButton(
-                onClick = onRegeneratePairingCode,
-                modifier = Modifier.height(52.dp)
-            ) {
-                Text("New Code ($pairingCode)")
-            }
-        }
-
-        HorizontalDivider(color = BorderSlate)
-
-        Text(
-            text = "Device Orientation (Synced with Web CMS • Assigned Video: $assignedVideoId)",
-            style = MaterialTheme.typography.titleMedium,
-            color = ElectricCyan
-        )
-        FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            orientations.forEach { orient ->
-                FilterChip(
-                    selected = liveState.orientation == orient,
-                    onClick = { onSetOrientation(orient) },
-                    label = { Text(orient) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = ElectricCyan.copy(alpha = 0.22f),
-                        selectedLabelColor = ElectricCyan
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "1. Rotate Video (+90° / -90°)",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = ElectricCyan
                     )
-                )
+                    Surface(
+                        color = SignalGreen.copy(alpha = 0.18f),
+                        shape = RoundedCornerShape(50)
+                    ) {
+                        Text(
+                            text = "Current: ${videoRotateDegrees}°",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = SignalGreen,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+
+                // Quick -90° and +90° Buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Button(
+                        onClick = { onRotateVideoByDelta(-90) },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .testTag("rotate_video_minus_90_button"),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ControlDeckSurfaceVariant,
+                            contentColor = ElectricCyan
+                        )
+                    ) {
+                        Icon(imageVector = Icons.Default.RotateLeft, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Rotate -90°", fontWeight = FontWeight.Bold, maxLines = 1)
+                    }
+
+                    Button(
+                        onClick = { onRotateVideoByDelta(90) },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .testTag("rotate_video_plus_90_button"),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ElectricCyan,
+                            contentColor = ObsidianBackground
+                        )
+                    ) {
+                        Icon(imageVector = Icons.Default.RotateRight, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Rotate +90°", fontWeight = FontWeight.Bold, maxLines = 1)
+                    }
+                }
+
+                // Direct Angle Chips (0° / 90° / 180° / 270°)
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    rotationAngles.forEach { angle ->
+                        val isSelected = videoRotateDegrees == angle
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = { onSetVideoRotationAngle(angle) },
+                            label = { Text("${angle}°") },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = SignalGreen.copy(alpha = 0.22f),
+                                selectedLabelColor = SignalGreen
+                            )
+                        )
+                    }
+                }
             }
         }
 
-        Text(
-            text = "Video Aspect Ratio & Scale Mode",
-            style = MaterialTheme.typography.titleMedium,
-            color = ElectricCyan
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        // 2. Video Scale Mode Card (Scale to Fit / Full Screen / Zoom)
+        Card(
+            colors = CardDefaults.cardColors(containerColor = ControlDeckSurface),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, BorderSlate, RoundedCornerShape(16.dp))
         ) {
-            scales.forEach { mode ->
-                FilterChip(
-                    selected = liveState.scaleMode == mode,
-                    onClick = { onSetScaleMode(mode) },
-                    label = { Text(mode) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = BroadcastIndigo.copy(alpha = 0.25f),
-                        selectedLabelColor = Color.White
-                    )
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "2. Video Scale Mode (Scale to Fit / Full Screen)",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = ElectricCyan
                 )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    scaleOptions.forEach { (mode, title, _) ->
+                        val isSelected = liveState.scaleMode == mode
+                        Button(
+                            onClick = { onSetScaleMode(mode) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(46.dp)
+                                .testTag("scale_mode_btn_$mode"),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isSelected) SignalGreen else ControlDeckSurfaceVariant,
+                                contentColor = if (isSelected) ObsidianBackground else Color.White
+                            )
+                        ) {
+                            Text(
+                                text = title,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
             }
         }
 
-        HorizontalDivider(color = BorderSlate)
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+        // 3. Screen Orientation (Landscape / Portrait) & Audio / Kiosk Switches
+        Card(
+            colors = CardDefaults.cardColors(containerColor = ControlDeckSurface),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, BorderSlate, RoundedCornerShape(16.dp))
         ) {
-            Column(modifier = Modifier.weight(1f)) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 Text(
-                    text = "Kiosk Mode Lock",
-                    style = MaterialTheme.typography.titleMedium
+                    text = "3. TV Screen Orientation (Landscape / Portrait)",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = ElectricCyan
                 )
-                Text(
-                    text = "Prevents accidental exit or back button navigation on unmanned displays",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary
-                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    listOf("LANDSCAPE", "PORTRAIT").forEach { mode ->
+                        val selected = screenOrientation.equals(mode, ignoreCase = true)
+                        Button(
+                            onClick = { onSetScreenOrientation(mode) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(46.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (selected) ElectricCyan else ControlDeckSurfaceVariant,
+                                contentColor = if (selected) ObsidianBackground else Color.White
+                            )
+                        ) {
+                            Text(mode, fontWeight = FontWeight.Bold, maxLines = 1)
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = BorderSlate)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Mute TV Audio", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        Text("Mute or unmute video sound", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                    }
+                    Switch(checked = liveState.isMuted, onCheckedChange = onToggleMute)
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("24x7 Kiosk Lock (PIN: 1234)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        Text("Auto-relaunch if closed & require PIN on ★ Star", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                    }
+                    Switch(checked = liveState.kioskLocked, onCheckedChange = onToggleKioskLock)
+                }
             }
-            Switch(
-                checked = liveState.kioskLocked,
-                onCheckedChange = onToggleKioskLock
+        }
+
+        Button(
+            onClick = onSaveSettings,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp)
+                .testTag("save_orientation_settings_button"),
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = SignalGreen,
+                contentColor = ObsidianBackground
             )
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Mute Display Audio",
-                    style = MaterialTheme.typography.titleMedium
-                )
-                Text(
-                    text = "Synchronized in real time with Web CMS ($cmsServerUrl)",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary
-                )
-            }
-            Switch(
-                checked = liveState.isMuted,
-                onCheckedChange = onToggleMute
+            Icon(imageVector = Icons.Default.Save, contentDescription = null)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "Save Settings ($screenOrientation • ${videoRotateDegrees}° • ${liveState.scaleMode})",
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
             )
         }
     }
 }
 
+// ----------------------------------------------------------------------------
+// PAGE 1: Real-Time Web Dashboard Pairing & 2.0s Sync Status
+// ----------------------------------------------------------------------------
+
 @Composable
-private fun AdminPlaylistManagerTab(
+private fun AdminPairingAndSyncPage(
+    cmsServerUrl: String,
+    isWebCmsConnected: Boolean,
+    deviceName: String,
+    pairingCode: String,
+    lastSyncCycleCount: Long,
+    onPairNow: (String, String, String) -> Unit,
+    onRegenerateCode: () -> Unit,
+    onForceSync: () -> Unit
+) {
+    var codeInput by remember(pairingCode) { mutableStateOf(pairingCode) }
+    var nameInput by remember(deviceName) { mutableStateOf(deviceName) }
+    var urlInput by remember(cmsServerUrl) { mutableStateOf(cmsServerUrl) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Card(
+            colors = CardDefaults.cardColors(containerColor = ControlDeckSurface),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, BorderSlate, RoundedCornerShape(16.dp))
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(if (isWebCmsConnected) SignalGreen else Color.White)
+                        )
+                        Text(
+                            text = "PAIRING CODE: ${pairingCode.chunked(3).joinToString(" ")}",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = ElectricCyan,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = if (isWebCmsConnected) {
+                            "✔ Green Dot = Connected & Syncing Live every 2.0s (#$lastSyncCycleCount)"
+                        } else {
+                            "○ White Dot = Offline Standby — Retrying connection (#$lastSyncCycleCount)"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (isWebCmsConnected) SignalGreen else Color.White
+                    )
+                }
+                OutlinedButton(onClick = onRegenerateCode) {
+                    Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("New Code", maxLines = 1)
+                }
+            }
+        }
+
+        OutlinedTextField(
+            value = codeInput,
+            onValueChange = { if (it.length <= 6) codeInput = it.filter { ch -> ch.isDigit() } },
+            label = { Text("6-Digit Pairing Code (Match with Web Dashboard)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        OutlinedTextField(
+            value = nameInput,
+            onValueChange = { nameInput = it },
+            label = { Text("TV Display Name (Shown in Web Dashboard)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        OutlinedTextField(
+            value = urlInput,
+            onValueChange = { urlInput = it },
+            label = { Text("Web CMS Dashboard URL (Vercel)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Button(
+                onClick = { onPairNow(codeInput, nameInput, urlInput) },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(50.dp)
+                    .testTag("pair_with_web_cms_button"),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = ElectricCyan,
+                    contentColor = ObsidianBackground
+                )
+            ) {
+                Icon(imageVector = Icons.Default.Link, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Pair & Connect Live (2s Sync)", fontWeight = FontWeight.Bold, maxLines = 1)
+            }
+
+            OutlinedButton(
+                onClick = onForceSync,
+                modifier = Modifier.height(50.dp),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Sync Now", maxLines = 1)
+            }
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// PAGE 2: Cloud Videos & "Download Offline View" Inside the App
+// ----------------------------------------------------------------------------
+
+@Composable
+private fun AdminCloudAndOfflineVideosPage(
     videos: List<PlaylistVideo>,
+    forcedOfflineVideoId: String?,
+    chunkTelemetry: ChunkTransferTelemetry,
     localManager: ChunkedStorageAndOtaManager,
+    onDownloadCloudVideoOffline: (PlaylistVideo) -> Unit,
+    onDownloadAllCloudVideosOffline: () -> Unit,
+    onPlayVideoOfflineNow: (PlaylistVideo) -> Unit,
+    onClearForcedOfflineVideo: () -> Unit,
     onIngestLocalVideo: (Uri, String) -> Unit,
     onDeleteVideo: (PlaylistVideo) -> Unit
 ) {
@@ -1253,94 +1750,242 @@ private fun AdminPlaylistManagerTab(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
-            onIngestLocalVideo(uri, "Local Cached Spot")
+            onIngestLocalVideo(uri, "Offline Device Video")
         }
     }
 
     Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(
-                text = "Synced & Offline Verified Videos (✔)",
-                style = MaterialTheme.typography.titleMedium,
-                color = ElectricCyan
-            )
+            Button(
+                onClick = onDownloadAllCloudVideosOffline,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = SignalGreen,
+                    contentColor = ObsidianBackground
+                ),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.testTag("download_all_cloud_videos_button")
+            ) {
+                Icon(imageVector = Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Download All Offline", fontWeight = FontWeight.Bold, maxLines = 1)
+            }
+
             OutlinedButton(
                 onClick = {
                     photoPicker.launch(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
                     )
-                }
+                },
+                shape = RoundedCornerShape(10.dp)
             ) {
-                Icon(imageVector = Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
+                Icon(imageVector = Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Cache Local Video (600KB Chunks)")
+                Text("Add Local Video", maxLines = 1)
+            }
+
+            if (forcedOfflineVideoId != null) {
+                TextButton(onClick = onClearForcedOfflineVideo) {
+                    Text("Loop All (${videos.size})", color = ElectricCyan, maxLines = 1)
+                }
+            }
+        }
+
+        if (chunkTelemetry.isActive) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = ControlDeckSurfaceVariant),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, ElectricCyan, RoundedCornerShape(12.dp))
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = chunkTelemetry.label,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = ElectricCyan,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            text = "${chunkTelemetry.progressPercent}%",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = SignalGreen
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    LinearProgressIndicator(
+                        progress = { (chunkTelemetry.progressPercent / 100f).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = ElectricCyan,
+                        trackColor = BorderSlate
+                    )
+                }
             }
         }
 
         if (videos.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    text = "Playlist is empty. Upload or assign videos from the Web CMS Dashboard (https://tv-br.vercel.app/).",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = TextSecondary,
-                    textAlign = TextAlign.Center
-                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = Icons.Default.VideoLibrary,
+                        contentDescription = null,
+                        tint = TextMuted,
+                        modifier = Modifier.size(40.dp)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "No Cloud videos synced yet.\nUpload a video in your Web Dashboard (https://tv-br.vercel.app) or tap 'Add Local Video' above.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary,
+                        textAlign = TextAlign.Center
+                    )
+                }
             }
         } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
                 items(videos, key = { it.id }) { video ->
-                    val isCached = video.isVerifiedCached || localManager.isFileVerifiedCached(video.localFileName)
+                    val isRealOfflineSaved = localManager.isRealMp4PlayableOffline(video.localFileName)
+                    val localBytes = localManager.getLocalFileSizeBytes(video.localFileName)
+                    val isThisVideoForced = forcedOfflineVideoId == video.id
+
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = ControlDeckSurfaceVariant),
+                        colors = CardDefaults.cardColors(containerColor = ControlDeckSurface),
                         shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(
+                                1.dp,
+                                if (isRealOfflineSaved) SignalGreen.copy(alpha = 0.5f) else BorderSlate,
+                                RoundedCornerShape(14.dp)
+                            )
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(14.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Text(
-                                        text = video.title,
-                                        style = MaterialTheme.typography.titleMedium
-                                    )
-                                    if (isCached) {
+                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Text(
+                                            text = video.title,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
                                         Surface(
-                                            color = SignalGreen.copy(alpha = 0.2f),
+                                            color = if (isRealOfflineSaved) {
+                                                SignalGreen.copy(alpha = 0.2f)
+                                            } else {
+                                                ElectricCyan.copy(alpha = 0.15f)
+                                            },
                                             shape = RoundedCornerShape(50)
                                         ) {
                                             Text(
-                                                text = "✔ Offline Verified",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = SignalGreen,
-                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                text = if (isRealOfflineSaved) {
+                                                    "✔ Offline (${(localBytes / 1024).coerceAtLeast(1)} KB)"
+                                                } else {
+                                                    "☁ Cloud Stream"
+                                                },
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = if (isRealOfflineSaved) SignalGreen else ElectricCyan,
+                                                maxLines = 1,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                                             )
                                         }
                                     }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "File: ${video.localFileName}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = TextSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                 }
-                                Text(
-                                    text = "Local: ${video.localFileName} • ${video.chunkCount} x 600KB chunks",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = TextSecondary
-                                )
+
+                                IconButton(onClick = { onDeleteVideo(video) }) {
+                                    Icon(
+                                        imageVector = Icons.Default.DeleteOutline,
+                                        contentDescription = "Delete Video",
+                                        tint = AlertCrimson
+                                    )
+                                }
                             }
-                            IconButton(onClick = { onDeleteVideo(video) }) {
-                                Icon(
-                                    imageVector = Icons.Default.DeleteOutline,
-                                    contentDescription = "Delete Video",
-                                    tint = AlertCrimson
-                                )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = { onDownloadCloudVideoOffline(video) },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(42.dp)
+                                        .testTag("download_offline_button_${video.id}"),
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (isRealOfflineSaved) ControlDeckSurfaceVariant else ElectricCyan,
+                                        contentColor = if (isRealOfflineSaved) SignalGreen else ObsidianBackground
+                                    )
+                                ) {
+                                    Icon(
+                                        imageVector = if (isRealOfflineSaved) {
+                                            Icons.Default.DownloadDone
+                                        } else {
+                                            Icons.Default.CloudDownload
+                                        },
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = if (isRealOfflineSaved) "✔ Offline Saved" else "Download Offline View",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        maxLines = 1
+                                    )
+                                }
+
+                                Button(
+                                    onClick = { onPlayVideoOfflineNow(video) },
+                                    modifier = Modifier
+                                        .height(42.dp)
+                                        .testTag("play_offline_view_button_${video.id}"),
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (isThisVideoForced) SignalGreen else BroadcastIndigo,
+                                        contentColor = if (isThisVideoForced) ObsidianBackground else Color.White
+                                    )
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.PlayArrow,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = if (isThisVideoForced) "Playing" else "Play Offline View",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        maxLines = 1
+                                    )
+                                }
                             }
                         }
                     }
@@ -1350,91 +1995,369 @@ private fun AdminPlaylistManagerTab(
     }
 }
 
+// ----------------------------------------------------------------------------
+// PAGE 3: 24x7 Kiosk Permissions, Default HOME Launcher & Auto-Boot Startup
+// ----------------------------------------------------------------------------
+
 @Composable
-private fun AdminOtaRollbackTab(
-    otaSlotState: OtaSlotState,
-    onManualOtaRollback: () -> Unit
+private fun Admin24x7PermissionsAndBootPage(
+    permissionsStatus: KioskPermissionsStatus,
+    onRefreshPermissions: () -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    val context = LocalContext.current
+
+    val homeRoleLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        onRefreshPermissions()
+    }
+
+    val deviceAdminLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        onRefreshPermissions()
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            text = "Grant all 5 permissions below for automatic TV boot startup & uninterrupted 24x7 operation:",
+            style = MaterialTheme.typography.bodyMedium,
+            color = TextSecondary
+        )
+
+        // 1. Default HOME Launcher Card
         Card(
-            colors = CardDefaults.cardColors(containerColor = ControlDeckSurfaceVariant),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0A141D)),
             shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(
+                    1.5.dp,
+                    if (permissionsStatus.isDefaultHomeLauncher) SignalGreen.copy(alpha = 0.7f) else ElectricCyan.copy(alpha = 0.5f),
+                    RoundedCornerShape(16.dp)
+                )
         ) {
-            Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "A/B Partition OTA Software Update Status",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = ElectricCyan
-                )
-                Text(
-                    text = "Active Partition: ${otaSlotState.activeSlot} • Installed Version: v${otaSlotState.installedVersionName} (Build ${otaSlotState.installedVersionCode})",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                    text = "Known-Good Backup Slot: v${otaSlotState.previousSlotVersionName} (Build ${otaSlotState.previousSlotVersionCode})",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = SignalGreen
-                )
-                Text(
-                    text = "Last OTA Event: ${otaSlotState.lastOtaMessage}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = TextSecondary
-                )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Home,
+                        contentDescription = null,
+                        tint = SignalGreen,
+                        modifier = Modifier.size(26.dp)
+                    )
+                    Column {
+                        Text(
+                            text = "Default HOME Launcher",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = if (permissionsStatus.isDefaultHomeLauncher) {
+                                "ACTIVE: PulseCast is set as your Default Home Launcher!"
+                            } else {
+                                "Set PulseCast as Default Home Launcher so it opens automatically when TV starts!"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (permissionsStatus.isDefaultHomeLauncher) SignalGreen else WatchdogAmber
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            try {
+                                homeRoleLauncher.launch(KioskPermissionHelper.requestDefaultHomeLauncherPopup(context))
+                            } catch (_: Exception) {
+                                KioskPermissionHelper.openHomeLauncherSettings(context)
+                            }
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(46.dp)
+                            .testTag("set_default_launcher_button"),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ElectricCyan,
+                            contentColor = ObsidianBackground
+                        )
+                    ) {
+                        Icon(imageVector = Icons.Default.Home, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Set Default Launcher",
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = { KioskPermissionHelper.openHomeLauncherSettings(context) },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(46.dp)
+                            .testTag("open_home_settings_button"),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = null,
+                            tint = ElectricCyan,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Open Home Settings",
+                            color = ElectricCyan,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
             }
         }
 
-        Button(
-            onClick = onManualOtaRollback,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = WatchdogAmber,
-                contentColor = ObsidianBackground
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(50.dp)
-                .testTag("admin_manual_ota_rollback_button"),
-            shape = RoundedCornerShape(12.dp)
-        ) {
-            Icon(imageVector = Icons.Default.SettingsBackupRestore, contentDescription = null)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = "Execute Instant Rollback to v${otaSlotState.previousSlotVersionName}",
-                fontWeight = FontWeight.Bold
-            )
-        }
+        // 2. Device Admin App (24x7 Lock) Card
+        KioskPermissionRowCard(
+            icon = Icons.Default.Security,
+            title = "Device Admin App (24x7 Lock)",
+            subtitle = if (permissionsStatus.isDeviceAdminEnabled) {
+                "ACTIVE: Device Admin 24x7 Lock privilege is enabled"
+            } else {
+                "Tap to activate Device Admin privilege in Android Settings"
+            },
+            buttonLabel = if (permissionsStatus.isDeviceAdminEnabled) "✔ Admin Active" else "Enable Admin",
+            isGranted = permissionsStatus.isDeviceAdminEnabled,
+            testTag = "enable_device_admin_button",
+            onClick = {
+                try {
+                    deviceAdminLauncher.launch(KioskPermissionHelper.buildDeviceAdminPopupIntent(context))
+                } catch (_: Exception) {
+                    KioskPermissionHelper.launchDeviceAdminPopup(context)
+                }
+            }
+        )
+
+        // 3. Accessibility Service (24x7 Guard) Card
+        KioskPermissionRowCard(
+            icon = Icons.Default.AccessibilityNew,
+            title = "Accessibility Service (24x7 Guard)",
+            subtitle = if (permissionsStatus.isAccessibilityGuardEnabled) {
+                "ACTIVE: PulseCast 24x7 Guard service is monitoring playback"
+            } else {
+                "Tap to open Accessibility Settings & enable PulseCast"
+            },
+            buttonLabel = if (permissionsStatus.isAccessibilityGuardEnabled) "✔ Guard Active" else "Open Accessibility",
+            isGranted = permissionsStatus.isAccessibilityGuardEnabled,
+            testTag = "open_accessibility_button",
+            onClick = { KioskPermissionHelper.openAccessibilitySettings(context) }
+        )
+
+        // 4. System Overlay (Display Over Apps) Card
+        KioskPermissionRowCard(
+            icon = Icons.Default.Layers,
+            title = "System Overlay (Display Over Apps)",
+            subtitle = if (permissionsStatus.isSystemOverlayGranted) {
+                "ACTIVE: Display Over Other Apps permission granted for auto-start"
+            } else {
+                "Tap to open Overlay Permission Settings directly"
+            },
+            buttonLabel = if (permissionsStatus.isSystemOverlayGranted) "✔ Overlay Granted" else "Grant Overlay",
+            isGranted = permissionsStatus.isSystemOverlayGranted,
+            testTag = "grant_overlay_button",
+            onClick = { KioskPermissionHelper.openOverlayPermissionPopup(context) }
+        )
+
+        // 5. 24x7 Unrestricted Battery Card
+        KioskPermissionRowCard(
+            icon = Icons.Default.BatteryChargingFull,
+            title = "24x7 Unrestricted Battery",
+            subtitle = if (permissionsStatus.isUnrestrictedBatteryAllowed) {
+                "ACTIVE: Battery optimization disabled for 24x7 uninterrupted playback"
+            } else {
+                "Tap to disable battery optimization for 24x7 playback"
+            },
+            buttonLabel = if (permissionsStatus.isUnrestrictedBatteryAllowed) "✔ 24x7 Allowed" else "Allow 24x7",
+            isGranted = permissionsStatus.isUnrestrictedBatteryAllowed,
+            testTag = "allow_24x7_battery_button",
+            onClick = { KioskPermissionHelper.openUnrestrictedBatteryPopup(context) }
+        )
     }
 }
 
 @Composable
-private fun AdminDiagnosticLogsTab(
+private fun KioskPermissionRowCard(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    buttonLabel: String,
+    isGranted: Boolean,
+    testTag: String,
+    onClick: () -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF0A111A)),
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(
+                1.dp,
+                if (isGranted) SignalGreen.copy(alpha = 0.5f) else BorderSlate,
+                RoundedCornerShape(14.dp)
+            )
+            .clickable { onClick() }
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = if (isGranted) SignalGreen else WatchdogAmber,
+                    modifier = Modifier.size(24.dp)
+                )
+                Column {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (isGranted) SignalGreen else TextSecondary
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Surface(
+                color = if (isGranted) SignalGreen.copy(alpha = 0.15f) else Color(0xFF0E1726),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier
+                    .border(
+                        1.dp,
+                        if (isGranted) SignalGreen else ElectricCyan.copy(alpha = 0.5f),
+                        RoundedCornerShape(10.dp)
+                    )
+                    .clickable { onClick() }
+                    .testTag(testTag)
+            ) {
+                Text(
+                    text = buttonLabel,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (isGranted) SignalGreen else ElectricCyan,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                )
+            }
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// PAGE 4: OTA Software Update Rollback & Live Diagnostic Logs
+// ----------------------------------------------------------------------------
+
+@Composable
+private fun AdminOtaAndLogsPage(
+    otaSlotState: OtaSlotState,
     logs: List<DiagnosticLogEntry>,
+    onManualOtaRollback: () -> Unit,
     onClearLogs: () -> Unit
 ) {
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Card(
+            colors = CardDefaults.cardColors(containerColor = ControlDeckSurface),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = "OTA Firmware Status: ${otaSlotState.activeSlot} (v${otaSlotState.installedVersionName})",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = ElectricCyan
+                )
+                Text(
+                    text = "Backup Slot: v${otaSlotState.previousSlotVersionName} • ${otaSlotState.lastOtaMessage}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = TextSecondary
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Button(
+                    onClick = onManualOtaRollback,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = WatchdogAmber,
+                        contentColor = ObsidianBackground
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(42.dp)
+                        .testTag("admin_manual_ota_rollback_button"),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(imageVector = Icons.Default.SettingsBackupRestore, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Instant Rollback to v${otaSlotState.previousSlotVersionName}", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "Live Telemetry & Watchdog Diagnostic Stream",
-                style = MaterialTheme.typography.titleMedium,
+                text = "Live 2.0s Sync & Watchdog Diagnostic Logs",
+                style = MaterialTheme.typography.titleSmall,
                 color = ElectricCyan
             )
             TextButton(onClick = onClearLogs) {
-                Text("Clear Logs")
+                Text("Clear")
             }
         }
-        Spacer(modifier = Modifier.height(8.dp))
+
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .clip(RoundedCornerShape(12.dp))
-                .background(ObsidianBackground)
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+                .background(ControlDeckSurface)
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             items(logs, key = { it.id }) { entry ->
                 val badgeColor = when (entry.level) {
@@ -1446,22 +2369,22 @@ private fun AdminDiagnosticLogsTab(
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
                         text = entry.timestampFormatted,
-                        style = MaterialTheme.typography.labelMedium,
+                        style = MaterialTheme.typography.labelSmall,
                         color = TextMuted
                     )
                     Text(
                         text = "[${entry.tag}]",
-                        style = MaterialTheme.typography.labelMedium,
+                        style = MaterialTheme.typography.labelSmall,
                         color = badgeColor,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
                         text = entry.message,
-                        style = MaterialTheme.typography.labelMedium,
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                 }

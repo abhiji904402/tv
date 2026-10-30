@@ -40,6 +40,7 @@ function getInitialStore() {
     liveState: {
       id: "live_state",
       orientation: "LANDSCAPE",
+      videoRotateDegrees: 0,
       scaleMode: "FILL",
       isMuted: false,
       kioskLocked: true,
@@ -78,6 +79,11 @@ function getInitialStore() {
     ],
     otaReleases: [],
   };
+}
+
+function normalizeDegrees(deg) {
+  const n = Number(deg) || 0;
+  return ((n % 360) + 360) % 360;
 }
 
 function readStore() {
@@ -197,15 +203,23 @@ module.exports = async function handler(req, res) {
         error: `Permission Denied: Role '${activeZone.operatorRole}' cannot rotate screen in '${activeZone.zoneName}'`,
       });
     }
+    let nextVideoRotate = store.liveState.videoRotateDegrees || 0;
+    if (body.videoRotateDegrees !== undefined) {
+      nextVideoRotate = normalizeDegrees(body.videoRotateDegrees);
+    } else if (body.rotateDelta !== undefined) {
+      nextVideoRotate = normalizeDegrees(nextVideoRotate + Number(body.rotateDelta));
+    }
+
     store.liveState = {
       ...store.liveState,
       ...(body.orientation !== undefined ? { orientation: body.orientation } : {}),
+      videoRotateDegrees: nextVideoRotate,
       ...(body.scaleMode !== undefined ? { scaleMode: body.scaleMode } : {}),
       ...(body.isMuted !== undefined ? { isMuted: Boolean(body.isMuted) } : {}),
       ...(body.kioskLocked !== undefined ? { kioskLocked: Boolean(body.kioskLocked) } : {}),
       ...(body.activeZoneId !== undefined ? { activeZoneId: body.activeZoneId } : {}),
       ...(body.adminPin !== undefined ? { adminPin: String(body.adminPin) } : {}),
-      ...(body.lastPushCommand !== undefined ? { lastPushCommand: String(body.lastPushCommand) } : {}),
+      lastPushCommand: body.lastPushCommand ? String(body.lastPushCommand) : `GLOBAL_STATE_${Date.now()}`,
       ...(body.activeOtaVersionCode !== undefined ? { activeOtaVersionCode: Number(body.activeOtaVersionCode) } : {}),
       ...(body.activeOtaVersionName !== undefined ? { activeOtaVersionName: String(body.activeOtaVersionName) } : {}),
     };
@@ -213,9 +227,21 @@ module.exports = async function handler(req, res) {
     return sendJson(res, 200, { ok: true, liveState: store.liveState });
   }
 
-  // 4. POST /api/device-control — Per-Device Orientation, Scale Mode, Mute, and Specific Video Assignment
+  // 4. POST /api/device-control — Per-Device Orientation, Video Rotate (+90/-90/0/90/180/270), Scale Mode (FIT/FILL/ZOOM), Mute, and Video Assignment
   if (req.method === "POST" && pathname === "/api/device-control") {
-    const { deviceId, pairingCode, orientation, scaleMode, isMuted, assignedVideoId, deviceName, zoneId, kioskLocked } = body;
+    const {
+      deviceId,
+      pairingCode,
+      orientation,
+      videoRotateDegrees,
+      rotateDelta,
+      scaleMode,
+      isMuted,
+      assignedVideoId,
+      deviceName,
+      zoneId,
+      kioskLocked,
+    } = body;
     const idx = store.devices.findIndex(
       (d) => (deviceId && d.id === deviceId) || (pairingCode && d.pairingCode === String(pairingCode))
     );
@@ -223,11 +249,27 @@ module.exports = async function handler(req, res) {
       return sendJson(res, 404, { ok: false, error: "Target device not found" });
     }
     const target = store.devices[idx];
+    let nextRotateDeg = target.videoRotateDegrees !== undefined ? Number(target.videoRotateDegrees) : 0;
+    if (videoRotateDegrees !== undefined) {
+      nextRotateDeg = normalizeDegrees(videoRotateDegrees);
+    } else if (rotateDelta !== undefined) {
+      nextRotateDeg = normalizeDegrees(nextRotateDeg + Number(rotateDelta));
+    } else if (orientation === "ROTATE_90") {
+      nextRotateDeg = 90;
+    } else if (orientation === "ROTATE_180") {
+      nextRotateDeg = 180;
+    } else if (orientation === "ROTATE_270") {
+      nextRotateDeg = 270;
+    } else if (orientation === "LANDSCAPE" || orientation === "PORTRAIT") {
+      nextRotateDeg = 0;
+    }
+
     store.devices[idx] = {
       ...target,
       ...(deviceName !== undefined ? { deviceName: String(deviceName) } : {}),
       ...(zoneId !== undefined ? { zoneId: String(zoneId) } : {}),
       ...(orientation !== undefined ? { orientation: String(orientation) } : {}),
+      videoRotateDegrees: nextRotateDeg,
       ...(scaleMode !== undefined ? { scaleMode: String(scaleMode) } : {}),
       ...(isMuted !== undefined ? { isMuted: Boolean(isMuted) } : {}),
       ...(assignedVideoId !== undefined ? { assignedVideoId: String(assignedVideoId) } : {}),
@@ -362,7 +404,7 @@ module.exports = async function handler(req, res) {
         : existing
         ? existing.zoneId
         : body.zoneId || "zone_lobby",
-      isPaired: isPairingAction ? true : existing ? existing.isPaired : Boolean(body.isPaired),
+      isPaired: isPairingAction ? true : existing && existing.isPaired !== undefined ? existing.isPaired : true,
       isOnline: true,
       lastHeartbeatEpochSec: nowSec,
       // Per-device display overrides controlled from Web CMS Dashboard
@@ -372,6 +414,12 @@ module.exports = async function handler(req, res) {
           : existing && existing.orientation
           ? existing.orientation
           : store.liveState.orientation || "LANDSCAPE",
+      videoRotateDegrees:
+        isPairingAction && body.videoRotateDegrees !== undefined
+          ? normalizeDegrees(body.videoRotateDegrees)
+          : existing && existing.videoRotateDegrees !== undefined
+          ? normalizeDegrees(existing.videoRotateDegrees)
+          : normalizeDegrees(store.liveState.videoRotateDegrees || 0),
       scaleMode:
         isPairingAction && body.scaleMode
           ? body.scaleMode
@@ -430,10 +478,14 @@ module.exports = async function handler(req, res) {
             (v) => !v.targetDeviceId || v.targetDeviceId === "ALL" || v.targetDeviceId === updatedDevice.id
           );
 
-    // Merge per-device orientation/scale/mute into the liveState returned to this TV client
+    // Merge per-device orientation/videoRotateDegrees/scale/mute into the liveState returned to this TV client
     const effectiveLiveState = {
       ...store.liveState,
       orientation: updatedDevice.orientation || store.liveState.orientation,
+      videoRotateDegrees:
+        updatedDevice.videoRotateDegrees !== undefined
+          ? updatedDevice.videoRotateDegrees
+          : store.liveState.videoRotateDegrees || 0,
       scaleMode: updatedDevice.scaleMode || store.liveState.scaleMode,
       isMuted: updatedDevice.isMuted !== undefined ? updatedDevice.isMuted : store.liveState.isMuted,
       kioskLocked: updatedDevice.kioskLocked !== undefined ? updatedDevice.kioskLocked : store.liveState.kioskLocked,

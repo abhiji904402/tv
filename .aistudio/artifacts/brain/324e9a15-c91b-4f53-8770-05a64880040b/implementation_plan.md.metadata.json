@@ -1,6 +1,6 @@
 {
-  "summary":  "Comprehensive implementation plan for the Production-Grade Digital Signage & TV Ad Network system, including the dual-mode Android TV Display Client (Media3 ExoPlayer gapless playback, 3.5s watchdog, offline caching, 6-digit pairing, orientation/scale controls, PIN-protected Admin Panel) and CMS Dashboard (Firestore real-time sync, 600KB chunked ingestion, zone permissions, live monitor, and A/B OTA Software Update & Rollback manager).",
-  "updatedAt":  "2026-10-29T13:46:07.397105020Z",
+  "summary":  "Implementation plan for minimal top-right status dot + green star trigger, built-in Admin PIN keypad, full-screen Admin Hub with top Back button and Bottom Navigation Bar, and per-device video rotation (+90°/-90°/0°/180°/270°) & scale mode (Scale to Fit / Full Screen / Zoom) in both the Android TV client and Web CMS Dashboard.",
+  "updatedAt":  "2026-10-29T16:25:58.037412091Z",
   "requestFeedback":  true,
   "userFacing":  true
 }
