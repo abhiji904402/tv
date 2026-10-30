@@ -17,8 +17,10 @@ import java.util.concurrent.TimeUnit
 data class RemoteHeartbeatSyncPayload(
     val liveState: LiveState,
     val videoRotateDegrees: Int?,
+    val remoteSettingsUpdatedAtMs: Long,
     val videos: List<PlaylistVideo>,
     val allCloudVideos: List<PlaylistVideo>,
+    val deletedVideoIds: Set<String>,
     val otaReleases: List<OtaRelease>,
     val assignedVideoId: String,
     val deviceName: String,
@@ -34,9 +36,9 @@ class VercelCmsApiClient {
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(2500, TimeUnit.MILLISECONDS)
-        .readTimeout(2500, TimeUnit.MILLISECONDS)
-        .writeTimeout(2500, TimeUnit.MILLISECONDS)
+        .connectTimeout(3000, TimeUnit.MILLISECONDS)
+        .readTimeout(3000, TimeUnit.MILLISECONDS)
+        .writeTimeout(3000, TimeUnit.MILLISECONDS)
         .build()
 
     suspend fun syncHeartbeatWithWebCms(
@@ -44,18 +46,52 @@ class VercelCmsApiClient {
         deviceId: String,
         pairingCode: String,
         deviceName: String,
+        currentOrientation: String,
+        currentVideoRotateDegrees: Int,
+        currentScaleMode: String,
+        currentIsMuted: Boolean,
+        settingsUpdatedAtMs: Long,
         currentVideoTitle: String,
         cachedVideoCount: Long,
-        otaSlotState: OtaSlotState
+        otaSlotState: OtaSlotState,
+        knownClientVideos: List<PlaylistVideo> = emptyList(),
+        deletedVideoIds: Set<String> = emptySet()
     ): Result<RemoteHeartbeatSyncPayload> = withContext(Dispatchers.IO) {
         try {
             val cleanBase = baseUrl.trim().trimEnd('/')
+
+            val clientVideosArr = JSONArray()
+            knownClientVideos
+                .filter { !it.id.startsWith("local_") && !deletedVideoIds.contains(it.id) }
+                .forEach { v ->
+                    clientVideosArr.put(
+                        JSONObject().apply {
+                            put("id", v.id)
+                            put("title", v.title)
+                            put("sourceUrl", v.sourceUrl)
+                            put("backupUrl", v.backupUrl)
+                            put("localFileName", v.localFileName)
+                            put("zoneId", v.zoneId)
+                            put("sizeBytes", v.sizeBytes)
+                            put("chunkCount", v.chunkCount)
+                        }
+                    )
+                }
+
+            val deletedIdsArr = JSONArray()
+            deletedVideoIds.forEach { deletedIdsArr.put(it) }
+
             val bodyJson = JSONObject().apply {
                 put("deviceId", deviceId)
                 put("pairingCode", pairingCode)
                 put("code", pairingCode)
                 put("deviceName", deviceName)
                 put("zoneId", "zone_lobby")
+                put("orientation", currentOrientation)
+                put("videoRotateDegrees", currentVideoRotateDegrees)
+                put("scaleMode", currentScaleMode)
+                put("isMuted", currentIsMuted)
+                put("settingsUpdatedAtMs", settingsUpdatedAtMs)
                 put("currentVideoTitle", currentVideoTitle)
                 put("cachedVideoCount", cachedVideoCount)
                 put("installedVersionCode", otaSlotState.installedVersionCode)
@@ -64,6 +100,8 @@ class VercelCmsApiClient {
                 put("previousSlotVersionName", otaSlotState.previousSlotVersionName)
                 put("otaStatus", otaSlotState.otaStatus)
                 put("lastOtaMessage", otaSlotState.lastOtaMessage)
+                put("clientVideos", clientVideosArr)
+                put("deletedVideoIds", deletedIdsArr)
             }
 
             val heartbeatReq = Request.Builder()
@@ -78,7 +116,6 @@ class VercelCmsApiClient {
                     null
                 }
             } ?: run {
-                // Fallback to GET /api/state if /api/heartbeat is not yet deployed on custom server
                 val fallbackReq = Request.Builder()
                     .url("$cleanBase/api/state")
                     .get()
@@ -105,25 +142,30 @@ class VercelCmsApiClient {
 
             val effectiveOrientation = deviceObj.optString(
                 "orientation",
-                lsObj.optString("orientation", lsObj.optString("rotation", "LANDSCAPE"))
-            ).ifBlank { "LANDSCAPE" }
+                lsObj.optString("orientation", lsObj.optString("rotation", currentOrientation))
+            ).ifBlank { currentOrientation }
 
             val remoteVideoRotateDegrees: Int? = when {
-                deviceObj.has("videoRotateDegrees") -> deviceObj.optInt("videoRotateDegrees", 0)
-                lsObj.has("videoRotateDegrees") -> lsObj.optInt("videoRotateDegrees", 0)
+                deviceObj.has("videoRotateDegrees") -> deviceObj.optInt("videoRotateDegrees", currentVideoRotateDegrees)
+                lsObj.has("videoRotateDegrees") -> lsObj.optInt("videoRotateDegrees", currentVideoRotateDegrees)
                 else -> null
             }
 
+            val remoteSettingsUpdatedAtMs = maxOf(
+                deviceObj.optLong("settingsUpdatedAtMs", 0L),
+                lsObj.optLong("settingsUpdatedAtMs", 0L)
+            )
+
             val effectiveScaleMode = deviceObj.optString(
                 "scaleMode",
-                lsObj.optString("scaleMode", "FILL")
-            ).ifBlank { "FILL" }
+                lsObj.optString("scaleMode", currentScaleMode)
+            ).ifBlank { currentScaleMode }
 
             val effectiveMuted = when {
-                deviceObj.has("isMuted") -> deviceObj.optBoolean("isMuted", false)
-                lsObj.has("isMuted") -> lsObj.optBoolean("isMuted", false)
-                lsObj.has("muted") -> lsObj.optBoolean("muted", false)
-                else -> false
+                deviceObj.has("isMuted") -> deviceObj.optBoolean("isMuted", currentIsMuted)
+                lsObj.has("isMuted") -> lsObj.optBoolean("isMuted", currentIsMuted)
+                lsObj.has("muted") -> lsObj.optBoolean("muted", currentIsMuted)
+                else -> currentIsMuted
             }
 
             val isPaired = when {
@@ -131,6 +173,11 @@ class VercelCmsApiClient {
                 deviceObj.has("paired") -> deviceObj.optBoolean("paired", true)
                 else -> true
             }
+
+            val effectivePushCmd = deviceObj.optString(
+                "lastPushCommand",
+                lsObj.optString("lastPushCommand", "SYNC_OK")
+            )
 
             val liveState = LiveState(
                 userId = "vercel_web_cms",
@@ -140,13 +187,19 @@ class VercelCmsApiClient {
                 kioskLocked = lsObj.optBoolean("kioskLocked", false),
                 adminPin = lsObj.optString("adminPin", "1234").ifBlank { "1234" },
                 activeZoneId = deviceObj.optString("zoneId", lsObj.optString("activeZoneId", "zone_lobby")),
-                lastPushCommand = deviceObj.optString(
-                    "lastPushCommand",
-                    lsObj.optString("lastPushCommand", "SYNC_OK")
-                ),
+                lastPushCommand = effectivePushCmd,
                 activeOtaVersionCode = lsObj.optLong("activeOtaVersionCode", 1L),
                 activeOtaVersionName = lsObj.optString("activeOtaVersionName", "1.0.0")
             )
+
+            val remoteDeletedSet = mutableSetOf<String>()
+            val delArr = root.optJSONArray("deletedVideoIds")
+            if (delArr != null) {
+                for (i in 0 until delArr.length()) {
+                    val dId = delArr.optString(i)
+                    if (dId.isNotBlank()) remoteDeletedSet.add(dId)
+                }
+            }
 
             fun parseVideoArray(arr: JSONArray?): List<PlaylistVideo> {
                 if (arr == null) return emptyList()
@@ -154,6 +207,7 @@ class VercelCmsApiClient {
                 for (i in 0 until arr.length()) {
                     val v = arr.optJSONObject(i) ?: continue
                     val rawId = v.optString("id", v.optString("_id", "vid_$i")).ifBlank { "vid_$i" }
+                    if (remoteDeletedSet.contains(rawId)) continue
                     val rawSourceUrl = v.optString(
                         "sourceUrl",
                         v.optString("url", v.optString("videoUrl", v.optString("src", "")))
@@ -220,8 +274,10 @@ class VercelCmsApiClient {
                 RemoteHeartbeatSyncPayload(
                     liveState = liveState,
                     videoRotateDegrees = remoteVideoRotateDegrees,
+                    remoteSettingsUpdatedAtMs = remoteSettingsUpdatedAtMs,
                     videos = deviceVideos,
                     allCloudVideos = if (allCloudVideos.isNotEmpty()) allCloudVideos else deviceVideos,
+                    deletedVideoIds = remoteDeletedSet,
                     otaReleases = parsedReleases,
                     assignedVideoId = deviceObj.optString("assignedVideoId", "ALL").ifBlank { "ALL" },
                     deviceName = deviceObj.optString("deviceName", deviceName).ifBlank { deviceName },
@@ -244,7 +300,8 @@ class VercelCmsApiClient {
         orientation: String,
         videoRotateDegrees: Int,
         scaleMode: String,
-        isMuted: Boolean
+        isMuted: Boolean,
+        settingsUpdatedAtMs: Long = System.currentTimeMillis()
     ): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             val cleanBase = baseUrl.trim().trimEnd('/')
@@ -258,6 +315,7 @@ class VercelCmsApiClient {
                 put("videoRotateDegrees", videoRotateDegrees)
                 put("scaleMode", scaleMode)
                 put("isMuted", isMuted)
+                put("settingsUpdatedAtMs", settingsUpdatedAtMs)
             }
             val request = Request.Builder()
                 .url("$cleanBase/api/pair")

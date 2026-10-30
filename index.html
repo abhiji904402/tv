@@ -47,7 +47,7 @@
         <div>
           <div class="flex items-center gap-2">
             <h1 class="font-display font-bold text-lg tracking-tight text-white">PulseCast Web CMS Dashboard</h1>
-            <span class="px-2.5 py-0.5 text-xs font-mono-code rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">LIVE 2.5s SYNC</span>
+            <span class="px-2.5 py-0.5 text-xs font-mono-code rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">LIVE 2.0s SYNC • PERMANENT VAULT</span>
           </div>
           <p class="text-xs text-slate-400 font-mono-code" id="headerSubStatus">Connecting to Android TV Fleet...</p>
         </div>
@@ -64,7 +64,7 @@
   <!-- Main Grid -->
   <main class="max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1">
 
-    <!-- Left 7 Columns: Connected TV Devices (Per-Device Orientation & Video Control) + 600KB Chunk Uploader -->
+    <!-- Left 7 Columns: Connected TV Devices (Per-Device Orientation & Video Control) + Lossless Video Uploader -->
     <div class="lg:col-span-7 space-y-6">
 
       <!-- 1. Pair New Android TV by 6-Digit Code -->
@@ -77,7 +77,7 @@
           <span class="text-xs text-slate-400">Enter the 6-digit code shown on your Android TV</span>
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <input id="pairCodeInput" type="text" maxlength="6" placeholder="6-Digit Code (e.g. 482910)" class="px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono-code text-sm focus:outline-none focus:border-cyan-400" />
+          <input id="pairCodeInput" type="text" maxlength="6" placeholder="6-Digit Code (e.g. 127489)" class="px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono-code text-sm focus:outline-none focus:border-cyan-400" />
           <input id="pairNameInput" type="text" placeholder="Screen Name (e.g. Lobby TV #1)" class="px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white text-sm focus:outline-none focus:border-cyan-400" />
           <button onclick="pairDevice()" class="px-4 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-sm transition">
             + Pair TV Screen
@@ -85,53 +85,53 @@
         </div>
       </section>
 
-      <!-- 2. Connected TV Displays — Per-Device Independent Orientation, Video Selection & Mute -->
+      <!-- 2. Connected TV Displays — Per-Device Independent Orientation, Video Rotate (+90/-90), Scale & Video Selection -->
       <section class="card-surface rounded-2xl p-5">
         <div class="flex items-center justify-between mb-4">
           <div>
             <span class="text-xs font-mono-code uppercase tracking-wider text-emerald-400">Per-Device Independent Control</span>
             <h2 class="font-display text-lg font-bold text-white">Connected Android TV Screens (<span id="deviceCountBadge">0</span>)</h2>
           </div>
-          <span class="text-xs text-slate-400">Control each TV's orientation, scale & video separately</span>
+          <span class="text-xs text-slate-400">Control each TV's orientation, rotation, scale & video separately</span>
         </div>
 
         <div id="devicesContainer" class="space-y-4">
           <div class="text-center py-8 text-slate-500 text-sm">
-            No Android TV screens paired yet. Open the Android TV app (it auto-registers within 2.5s) or enter its 6-digit code above.
+            No Android TV screens paired yet. Open the Android TV app (it auto-registers within 2.0s) or enter its 6-digit code above.
           </div>
         </div>
       </section>
 
-      <!-- 3. High-Speed 600KB Chunked Video Uploader -->
+      <!-- 3. Lossless Original-Quality Video Uploader (Persisted in IndexedDB + Cloud Vault) -->
       <section class="card-surface rounded-2xl p-5">
         <div class="flex items-center justify-between mb-3">
           <div>
-            <span class="text-xs font-mono-code uppercase tracking-wider text-cyan-400">600KB Chunked Ingestion Pipeline</span>
+            <span class="text-xs font-mono-code uppercase tracking-wider text-cyan-400">100% Original Quality • Permanent Storage</span>
             <h2 class="font-display text-lg font-bold text-white">Upload Ad Video or Add Stream URL</h2>
           </div>
-          <span class="text-xs font-mono-code text-emerald-400">Saves to /tmp/videos + Local TV Cache ✔</span>
+          <span class="text-xs font-mono-code text-emerald-400">Never Deleted on Refresh ✔</span>
         </div>
 
         <div class="space-y-3">
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <input id="videoTitleInput" type="text" placeholder="Ad Creative Title (e.g. Nike 4K Spot)" class="px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white text-sm focus:outline-none focus:border-cyan-400" />
+            <input id="videoTitleInput" type="text" placeholder="Ad Creative Title (e.g. Showroom 4K Promo)" class="px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white text-sm focus:outline-none focus:border-cyan-400" />
             <select id="videoTargetDeviceSelect" class="px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white text-sm focus:outline-none focus:border-cyan-400">
               <option value="ALL">Target: All Paired TV Screens</option>
             </select>
           </div>
 
-          <!-- File Upload (600KB Chunks) -->
+          <!-- File Upload (Lossless 600KB Chunks + IndexedDB Vault) -->
           <div class="p-4 rounded-xl bg-slate-950 border border-dashed border-slate-700 flex flex-col sm:flex-row items-center justify-between gap-3">
-            <input id="videoFileInput" type="file" accept="video/mp4,video/webm,video/*" class="text-xs text-slate-300 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-cyan-500/20 file:text-cyan-300 hover:file:bg-cyan-500/30" />
-            <button onclick="uploadFileIn600KBChunks()" class="w-full sm:w-auto px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs transition shrink-0">
-              Upload in 600KB Chunks
+            <input id="videoFileInput" type="file" accept="video/mp4,video/webm,video/quicktime,video/*" onchange="onFileSelectedForPreview(this)" class="text-xs text-slate-300 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-cyan-500/20 file:text-cyan-300 hover:file:bg-cyan-500/30" />
+            <button id="uploadBtn" onclick="uploadFileIn600KBChunks()" class="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs transition shrink-0">
+              ⬆ Upload Full Quality & Save Permanently
             </button>
           </div>
 
           <!-- Chunk Progress Bar -->
           <div id="chunkProgressBox" class="hidden p-3 rounded-xl bg-slate-950 border border-cyan-500/40">
             <div class="flex justify-between text-xs font-mono-code text-cyan-300 mb-1.5">
-              <span id="chunkProgressLabel">Uploading 600KB chunks...</span>
+              <span id="chunkProgressLabel">Uploading lossless chunks...</span>
               <span id="chunkProgressPct">0%</span>
             </div>
             <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
@@ -141,7 +141,7 @@
 
           <!-- Or Direct Stream URL -->
           <div class="flex flex-col sm:flex-row gap-3 pt-1">
-            <input id="streamUrlInput" type="url" placeholder="Or paste direct MP4/Stream URL (leave blank for sample 4K stream)" class="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white text-sm focus:outline-none focus:border-cyan-400" />
+            <input id="streamUrlInput" type="url" placeholder="Or paste direct MP4/Stream URL (1080p/4K MP4 link)" class="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white text-sm focus:outline-none focus:border-cyan-400" />
             <button onclick="addStreamVideo()" class="px-4 py-2.5 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white font-semibold text-sm transition shrink-0">
               + Add Stream to Playlist
             </button>
@@ -157,17 +157,17 @@
       <section class="card-surface rounded-2xl p-5">
         <div class="flex items-center justify-between mb-3">
           <div>
-            <span class="text-xs font-mono-code uppercase tracking-wider text-cyan-400">Live Preview Monitor</span>
-            <h2 class="font-display text-lg font-bold text-white">Real-Time Broadcast Output</h2>
+            <span class="text-xs font-mono-code uppercase tracking-wider text-cyan-400">Live Preview Monitor (Original Quality)</span>
+            <h2 class="font-display text-lg font-bold text-white" id="previewMonitorTitle">Real-Time Broadcast Output</h2>
           </div>
-          <span id="livePreviewBadge" class="text-xs font-mono-code px-2.5 py-1 rounded-md bg-slate-800 text-cyan-300">LANDSCAPE • FILL</span>
+          <span id="livePreviewBadge" class="text-xs font-mono-code px-2.5 py-1 rounded-md bg-slate-800 text-cyan-300">LANDSCAPE • 0° • FILL</span>
         </div>
 
-        <div class="relative w-full h-48 rounded-xl bg-slate-950 border border-slate-800 overflow-hidden flex items-center justify-center">
-          <video id="livePreviewVideo" class="w-full h-full object-cover transition-transform duration-300 hidden" autoplay loop muted playsinline></video>
+        <div class="relative w-full h-56 rounded-xl bg-slate-950 border border-slate-800 overflow-hidden flex items-center justify-center">
+          <video id="livePreviewVideo" class="w-full h-full object-contain transition-transform duration-300 hidden" controls autoplay loop muted playsinline></video>
           <div id="livePreviewEmpty" class="text-center p-4">
-            <div class="text-slate-500 font-mono-code text-xs mb-1">STANDBY — EMPTY PLAYLIST</div>
-            <div class="text-slate-400 text-xs">Upload a video or add a stream URL to start live playback</div>
+            <div class="text-slate-500 font-mono-code text-xs mb-1">STANDBY — NO VIDEO SELECTED</div>
+            <div class="text-slate-400 text-xs">Upload a video or click "👁 Preview" on any playlist item below</div>
           </div>
         </div>
 
@@ -175,10 +175,14 @@
         <div class="mt-4 space-y-3">
           <div class="text-xs font-mono-code text-slate-400">GLOBAL FLEET ORIENTATION, VIDEO ROTATION & SCALE</div>
           <div class="flex flex-wrap gap-1.5" id="globalOrientationBtns">
-            <button onclick="updateGlobalState({orientation:'LANDSCAPE', videoRotateDegrees:0})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">LANDSCAPE</button>
-            <button onclick="updateGlobalState({orientation:'PORTRAIT', videoRotateDegrees:0})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">PORTRAIT</button>
+            <button onclick="updateGlobalState({orientation:'LANDSCAPE'})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">LANDSCAPE</button>
+            <button onclick="updateGlobalState({orientation:'PORTRAIT'})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">PORTRAIT</button>
             <button onclick="updateGlobalState({rotateDelta: -90})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 font-semibold">⟲ Rotate -90°</button>
             <button onclick="updateGlobalState({rotateDelta: 90})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 font-semibold">⟳ Rotate +90°</button>
+            <button onclick="updateGlobalState({videoRotateDegrees: 0})" class="px-2 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">0°</button>
+            <button onclick="updateGlobalState({videoRotateDegrees: 90})" class="px-2 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">90°</button>
+            <button onclick="updateGlobalState({videoRotateDegrees: 180})" class="px-2 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">180°</button>
+            <button onclick="updateGlobalState({videoRotateDegrees: 270})" class="px-2 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">270°</button>
           </div>
           <div class="flex flex-wrap items-center justify-between gap-2 pt-1">
             <div class="flex flex-wrap gap-1.5">
@@ -193,18 +197,18 @@
         </div>
       </section>
 
-      <!-- 5. Active Playlist Manager (Starts Empty) -->
+      <!-- 5. Active Playlist Manager (Permanent Vault — Never Disappears on Refresh) -->
       <section class="card-surface rounded-2xl p-5">
         <div class="flex items-center justify-between mb-3">
           <div>
-            <span class="text-xs font-mono-code uppercase tracking-wider text-cyan-400">Playlist Manager</span>
-            <h2 class="font-display text-lg font-bold text-white">Active Video Creatives (<span id="playlistCountBadge">0</span>)</h2>
+            <span class="text-xs font-mono-code uppercase tracking-wider text-cyan-400">Permanent Playlist Manager</span>
+            <h2 class="font-display text-lg font-bold text-white">Saved Video Creatives (<span id="playlistCountBadge">0</span>)</h2>
           </div>
-          <span class="text-xs font-mono-code text-emerald-400">✔ = Offline Ready</span>
+          <span class="text-xs font-mono-code text-emerald-400">✔ Saved Until Deleted</span>
         </div>
         <div id="playlistContainer" class="space-y-2.5">
           <div class="text-center py-6 text-slate-500 text-xs">
-            Playlist is empty (no default demo videos).
+            No videos uploaded yet. Upload a video above — it will stay permanently saved until you click Delete.
           </div>
         </div>
       </section>
@@ -242,14 +246,140 @@
   </main>
 
   <script>
+    // =========================================================================
+    // Persistent LocalStorage + IndexedDB Video Vault
+    // Ensures uploaded videos & quality NEVER disappear on page refresh!
+    // =========================================================================
+    const STORAGE_VIDEOS_KEY = "pulsecast_saved_videos_v2";
+    const STORAGE_DELETED_IDS_KEY = "pulsecast_deleted_video_ids_v2";
+    const IDB_NAME = "pulsecast_video_vault_db";
+    const IDB_STORE = "video_blobs";
+
+    let localSavedVideos = loadSavedVideosFromStorage();
+    let localDeletedIds = loadDeletedIdsFromStorage();
+    let blobObjectUrls = {}; // videoId -> objectURL for 100% lossless local preview
+    let selectedPreviewVideoId = null;
+    let lastPreviewUrl = "";
+
     let currentState = {
       liveState: { orientation: "LANDSCAPE", videoRotateDegrees: 0, scaleMode: "FILL", isMuted: false, kioskLocked: true },
-      videos: [],
+      videos: [...localSavedVideos],
       devices: [],
       zones: [],
       otaReleases: []
     };
-    let lastPreviewUrl = "";
+
+    function loadSavedVideosFromStorage() {
+      try {
+        const raw = localStorage.getItem(STORAGE_VIDEOS_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function saveVideosToStorage(videosList) {
+      try {
+        localSavedVideos = videosList;
+        localStorage.setItem(STORAGE_VIDEOS_KEY, JSON.stringify(videosList));
+      } catch (e) {
+        console.warn("Failed to save videos to localStorage:", e);
+      }
+    }
+
+    function loadDeletedIdsFromStorage() {
+      try {
+        const raw = localStorage.getItem(STORAGE_DELETED_IDS_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function saveDeletedIdsToStorage(idsList) {
+      try {
+        localDeletedIds = Array.from(new Set(idsList));
+        localStorage.setItem(STORAGE_DELETED_IDS_KEY, JSON.stringify(localDeletedIds));
+      } catch (_) {}
+    }
+
+    function openVideoVaultDb() {
+      return new Promise((resolve, reject) => {
+        if (!window.indexedDB) return resolve(null);
+        const req = indexedDB.open(IDB_NAME, 1);
+        req.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains(IDB_STORE)) {
+            db.createObjectStore(IDB_STORE);
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+      });
+    }
+
+    async function saveVideoBlobToVault(videoId, fileBlob) {
+      try {
+        if (blobObjectUrls[videoId]) {
+          URL.revokeObjectURL(blobObjectUrls[videoId]);
+        }
+        blobObjectUrls[videoId] = URL.createObjectURL(fileBlob);
+        const db = await openVideoVaultDb();
+        if (!db) return;
+        await new Promise((resolve) => {
+          const tx = db.transaction(IDB_STORE, "readwrite");
+          tx.objectStore(IDB_STORE).put(fileBlob, videoId);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+        });
+      } catch (e) {
+        console.warn("IndexedDB save warning:", e);
+      }
+    }
+
+    async function deleteVideoBlobFromVault(videoId) {
+      try {
+        if (blobObjectUrls[videoId]) {
+          URL.revokeObjectURL(blobObjectUrls[videoId]);
+          delete blobObjectUrls[videoId];
+        }
+        const db = await openVideoVaultDb();
+        if (!db) return;
+        const tx = db.transaction(IDB_STORE, "readwrite");
+        tx.objectStore(IDB_STORE).delete(videoId);
+      } catch (_) {}
+    }
+
+    async function restoreAllVideoBlobsFromVault() {
+      try {
+        const db = await openVideoVaultDb();
+        if (!db) return;
+        for (const v of localSavedVideos) {
+          if (!v || !v.id || blobObjectUrls[v.id]) continue;
+          const blob = await new Promise((resolve) => {
+            const tx = db.transaction(IDB_STORE, "readonly");
+            const req = tx.objectStore(IDB_STORE).get(v.id);
+            req.onsuccess = () => resolve(req.result || null);
+            req.onerror = () => resolve(null);
+          });
+          if (blob instanceof Blob) {
+            blobObjectUrls[v.id] = URL.createObjectURL(blob);
+          }
+        }
+      } catch (_) {}
+    }
+
+    function formatFileSize(bytes) {
+      const b = Number(bytes) || 0;
+      if (b >= 1024 * 1024) {
+        return (b / (1024 * 1024)).toFixed(2) + " MB";
+      }
+      return Math.max(1, Math.round(b / 1024)) + " KB";
+    }
 
     function showToast(msg) {
       const toast = document.getElementById("syncToast");
@@ -262,17 +392,77 @@
       }, 3000);
     }
 
+    function mergeVideosWithVault(serverVideos, serverDeletedIds) {
+      const mergedDeleted = Array.from(new Set([...(localDeletedIds || []), ...(serverDeletedIds || [])]));
+      saveDeletedIdsToStorage(mergedDeleted);
+      const deletedSet = new Set(mergedDeleted);
+
+      const map = new Map();
+      for (const lv of localSavedVideos) {
+        if (lv && lv.id && !deletedSet.has(lv.id)) {
+          map.set(lv.id, lv);
+        }
+      }
+      for (const sv of (serverVideos || [])) {
+        if (sv && sv.id && !deletedSet.has(sv.id)) {
+          const existing = map.get(sv.id) || {};
+          map.set(sv.id, { ...existing, ...sv });
+        }
+      }
+      const mergedList = Array.from(map.values());
+      saveVideosToStorage(mergedList);
+      return mergedList;
+    }
+
     async function fetchLiveState() {
       try {
-        const res = await fetch("/api/state");
+        const res = await fetch("/api/reconcile", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            videos: localSavedVideos,
+            deletedVideoIds: localDeletedIds
+          })
+        });
         const data = await res.json();
         if (data && data.ok) {
-          currentState = data;
+          const mergedVideos = mergeVideosWithVault(data.videos || [], data.deletedVideoIds || []);
+          currentState = {
+            ...data,
+            videos: mergedVideos
+          };
           renderDashboard();
         }
       } catch (e) {
-        document.getElementById("headerSubStatus").textContent = "Reconnecting to /api/state...";
+        // Even if offline, render locally saved videos so they never disappear!
+        currentState.videos = localSavedVideos;
+        renderDashboard();
+        document.getElementById("headerSubStatus").textContent = "Reconnecting to /api/state (Local Vault Active)...";
       }
+    }
+
+    function onFileSelectedForPreview(inputEl) {
+      const file = inputEl.files && inputEl.files[0];
+      if (!file) return;
+      const tempPreviewUrl = URL.createObjectURL(file);
+      const videoEl = document.getElementById("livePreviewVideo");
+      const emptyEl = document.getElementById("livePreviewEmpty");
+      videoEl.classList.remove("hidden");
+      emptyEl.classList.add("hidden");
+      lastPreviewUrl = tempPreviewUrl;
+      videoEl.src = tempPreviewUrl;
+      videoEl.play().catch(() => {});
+      document.getElementById("previewMonitorTitle").textContent = `Previewing Ready to Upload: ${file.name} (${formatFileSize(file.size)})`;
+      if (!document.getElementById("videoTitleInput").value.trim()) {
+        document.getElementById("videoTitleInput").value = file.name.replace(/\.[^/.]+$/, "");
+      }
+    }
+
+    function previewSpecificVideo(videoId) {
+      selectedPreviewVideoId = videoId;
+      lastPreviewUrl = ""; // Force reload in preview player
+      renderDashboard();
+      showToast("Playing video in Live Preview Monitor");
     }
 
     function renderDashboard() {
@@ -282,7 +472,7 @@
       const onlineCount = devices.filter(d => d.isOnline).length;
 
       document.getElementById("headerSubStatus").textContent =
-        `cms_global/live_state • ${onlineCount}/${devices.length} TV(s) Connected • Playlist: ${videos.length} video(s) • OTA: v${ls.activeOtaVersionName || "1.0.0"}`;
+        `cms_global/live_state • ${onlineCount}/${devices.length} TV(s) Connected • Saved Playlist: ${videos.length} video(s) • OTA: v${ls.activeOtaVersionName || "1.0.0"}`;
 
       document.getElementById("deviceCountBadge").textContent = devices.length;
       document.getElementById("playlistCountBadge").textContent = videos.length;
@@ -303,16 +493,21 @@
         devices.map(d => `<option value="${d.id}">Target TV: ${d.deviceName} (Code: ${d.pairingCode})</option>`).join("");
       targetSelect.value = currentVal;
 
-      // Update Live Preview Monitor
+      // Update Live Preview Monitor (Prefer lossless local IndexedDB Blob URL if available!)
       const videoEl = document.getElementById("livePreviewVideo");
       const emptyEl = document.getElementById("livePreviewEmpty");
       if (videos.length > 0) {
+        const targetVid = videos.find(v => v.id === selectedPreviewVideoId) || videos[0];
+        selectedPreviewVideoId = targetVid.id;
         videoEl.classList.remove("hidden");
         emptyEl.classList.add("hidden");
-        const activeUrl = videos[0].sourceUrl;
-        if (lastPreviewUrl !== activeUrl) {
-          lastPreviewUrl = activeUrl;
-          videoEl.src = activeUrl;
+        const bestPreviewUrl = blobObjectUrls[targetVid.id] || targetVid.sourceUrl;
+        document.getElementById("previewMonitorTitle").textContent =
+          `Preview: ${targetVid.title} (${formatFileSize(targetVid.sizeBytes)})`;
+
+        if (lastPreviewUrl !== bestPreviewUrl && bestPreviewUrl) {
+          lastPreviewUrl = bestPreviewUrl;
+          videoEl.src = bestPreviewUrl;
           videoEl.play().catch(() => {});
         }
         const rot = ls.videoRotateDegrees !== undefined
@@ -320,13 +515,13 @@
           : (ls.orientation === "ROTATE_90" ? 90 : ls.orientation === "ROTATE_180" ? 180 : ls.orientation === "ROTATE_270" ? 270 : 0);
         videoEl.style.transform = `rotate(${rot}deg)`;
         videoEl.style.objectFit = ls.scaleMode === "FIT" ? "contain" : "cover";
-      } else {
+      } else if (!lastPreviewUrl.startsWith("blob:")) {
         videoEl.classList.add("hidden");
         emptyEl.classList.remove("hidden");
-        lastPreviewUrl = "";
+        document.getElementById("previewMonitorTitle").textContent = "Real-Time Broadcast Output";
       }
 
-      // Render Per-Device Cards with individual Screen Orientation, Video Rotate (+90°/-90°/0°/90°/180°/270°), Scale to Fit / Full Screen & Video Selectors
+      // Render Per-Device Cards
       const devContainer = document.getElementById("devicesContainer");
       if (devices.length === 0) {
         devContainer.innerHTML = `<div class="text-center py-8 text-slate-500 text-sm">No Android TV screens paired yet. Open the Android TV app (it auto-registers within 2.0s) or enter its 6-digit code above.</div>`;
@@ -338,8 +533,8 @@
             ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
             : "bg-rose-500/15 text-rose-300 border-rose-500/30";
 
-          const videoOptions = `<option value="ALL" ${(!d.assignedVideoId || d.assignedVideoId === "ALL") ? "selected" : ""}>Loop All Playlist Videos (${videos.length})</option>` +
-            videos.map(v => `<option value="${v.id}" ${d.assignedVideoId === v.id ? "selected" : ""}>Play Only: ${v.title}</option>`).join("");
+          const videoOptions = `<option value="ALL" ${(!d.assignedVideoId || d.assignedVideoId === "ALL") ? "selected" : ""}>Loop All Saved Videos (${videos.length})</option>` +
+            videos.map(v => `<option value="${v.id}" ${d.assignedVideoId === v.id ? "selected" : ""}>Play Only: ${v.title} (${formatFileSize(v.sizeBytes)})</option>`).join("");
 
           const screenOrient = (d.orientation === "PORTRAIT") ? "PORTRAIT" : "LANDSCAPE";
           const videoDeg = d.videoRotateDegrees !== undefined ? Number(d.videoRotateDegrees) : 0;
@@ -417,27 +612,35 @@
         }).join("");
       }
 
-      // Render Playlist Items
+      // Render Permanent Playlist Items with Preview, Push & Delete buttons
       const plContainer = document.getElementById("playlistContainer");
       if (videos.length === 0) {
-        plContainer.innerHTML = `<div class="text-center py-6 text-slate-500 text-xs">Playlist is empty (no default demo videos).</div>`;
+        plContainer.innerHTML = `<div class="text-center py-6 text-slate-500 text-xs">No videos uploaded yet. Upload a video above — it will stay permanently saved until you click Delete.</div>`;
       } else {
-        plContainer.innerHTML = videos.map(v => `
-          <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between gap-3">
-            <div class="min-w-0">
-              <div class="flex items-center gap-2">
-                <span class="font-medium text-sm text-white truncate">${v.title}</span>
-                <span class="px-2 py-0.5 text-[10px] font-mono-code rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">✔ Offline Ready</span>
+        plContainer.innerHTML = videos.map(v => {
+          const isPreviewing = selectedPreviewVideoId === v.id;
+          return `
+            <div class="p-3 rounded-xl bg-slate-950 border ${isPreviewing ? 'border-cyan-400' : 'border-slate-800'} flex flex-wrap items-center justify-between gap-3">
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2">
+                  <span class="font-medium text-sm text-white truncate">${v.title}</span>
+                  <span class="px-2 py-0.5 text-[10px] font-mono-code rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">✔ Original Quality (${formatFileSize(v.sizeBytes)})</span>
+                </div>
+                <div class="text-xs font-mono-code text-slate-400 truncate mt-0.5">
+                  ${v.chunkCount || 1} chunks • Target: ${v.targetDeviceId || 'ALL'} • Permanent Vault
+                </div>
               </div>
-              <div class="text-xs font-mono-code text-slate-400 truncate mt-0.5">
-                ${v.chunkCount || 1} x 600KB chunks • Target: ${v.targetDeviceId || 'ALL'}
+              <div class="flex items-center gap-1.5 shrink-0">
+                <button onclick="previewSpecificVideo('${v.id}')" class="px-2.5 py-1 rounded-lg ${isPreviewing ? 'bg-cyan-500 text-slate-950 font-bold' : 'bg-cyan-500/15 hover:bg-cyan-500/30 text-cyan-300'} text-xs font-mono-code">
+                  👁 Preview
+                </button>
+                <button onclick="deleteVideo('${v.id}')" class="px-2.5 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 text-xs font-mono-code">
+                  Delete
+                </button>
               </div>
             </div>
-            <button onclick="deleteVideo('${v.id}')" class="px-2.5 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 text-xs font-mono-code shrink-0">
-              Delete
-            </button>
-          </div>
-        `).join("");
+          `;
+        }).join("");
       }
     }
 
@@ -445,7 +648,11 @@
       await fetch("/api/state", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch)
+        body: JSON.stringify({
+          ...patch,
+          clientVideos: localSavedVideos,
+          deletedVideoIds: localDeletedIds
+        })
       });
       showToast("Synced global setting to Android TV fleet!");
       fetchLiveState();
@@ -471,7 +678,13 @@
       await fetch("/api/pair", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pairingCode: code, deviceName: name || `Android TV #${code}`, isPaired: true })
+        body: JSON.stringify({
+          pairingCode: code,
+          deviceName: name || `Android TV #${code}`,
+          isPaired: true,
+          clientVideos: localSavedVideos,
+          deletedVideoIds: localDeletedIds
+        })
       });
       document.getElementById("pairCodeInput").value = "";
       document.getElementById("pairNameInput").value = "";
@@ -498,15 +711,21 @@
       }
       const title = document.getElementById("videoTitleInput").value.trim() || file.name;
       const targetDeviceId = document.getElementById("videoTargetDeviceSelect").value || "ALL";
-      const CHUNK_SIZE = 600 * 1024; // 600KB chunks
+      const CHUNK_SIZE = 600 * 1024; // 600KB lossless chunks
       const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
       const fileId = Date.now().toString(36);
+      const vidId = `vid_${fileId}`;
+
+      // 1. Save full original quality video Blob in IndexedDB immediately so it never degrades or disappears!
+      await saveVideoBlobToVault(vidId, file);
 
       const progBox = document.getElementById("chunkProgressBox");
       const progBar = document.getElementById("chunkProgressBar");
       const progPct = document.getElementById("chunkProgressPct");
       const progLabel = document.getElementById("chunkProgressLabel");
       progBox.classList.remove("hidden");
+
+      let uploadedVideoEntry = null;
 
       for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
         const slice = file.slice(chunkIndex * CHUNK_SIZE, (chunkIndex + 1) * CHUNK_SIZE);
@@ -516,12 +735,12 @@
           reader.readAsDataURL(slice);
         });
 
-        progLabel.textContent = `Uploading '${title}' — Chunk ${chunkIndex + 1}/${totalChunks} (600KB)...`;
+        progLabel.textContent = `Uploading 100% Original Quality '${title}' — Chunk ${chunkIndex + 1}/${totalChunks} (${formatFileSize(file.size)})...`;
         const pct = Math.round(((chunkIndex + 1) / totalChunks) * 100);
         progBar.style.width = `${pct}%`;
         progPct.textContent = `${pct}%`;
 
-        await fetch("/api/upload-chunk", {
+        const resp = await fetch("/api/upload-chunk", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -531,15 +750,40 @@
             targetDeviceId,
             chunkIndex,
             totalChunks,
+            totalFileSize: file.size,
             base64Chunk
           })
         });
+        const respData = await resp.json().catch(() => ({}));
+        if (respData && respData.video) {
+          uploadedVideoEntry = respData.video;
+        }
       }
+
+      const safeFileName = `${fileId}_${(file.name || "video.mp4").replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+      const finalVideoEntry = uploadedVideoEntry || {
+        id: vidId,
+        title,
+        sourceUrl: `${window.location.origin}/api/videos/file/${encodeURIComponent(safeFileName)}`,
+        backupUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
+        localFileName: safeFileName,
+        targetDeviceId,
+        sizeBytes: file.size,
+        chunkCount: totalChunks,
+        isVerifiedCached: true,
+        createdAtEpochMs: Date.now()
+      };
+
+      // Remove from deleted IDs if present and persist in localStorage
+      saveDeletedIdsToStorage(localDeletedIds.filter(id => id !== vidId));
+      const updatedList = localSavedVideos.filter(v => v.id !== vidId).concat(finalVideoEntry);
+      saveVideosToStorage(updatedList);
+      selectedPreviewVideoId = vidId;
 
       setTimeout(() => progBox.classList.add("hidden"), 800);
       fileInput.value = "";
       document.getElementById("videoTitleInput").value = "";
-      showToast(`Uploaded '${title}' (${totalChunks} x 600KB chunks) & pushed to TV!`);
+      showToast(`✔ Uploaded '${title}' (${formatFileSize(file.size)}) — Permanently Saved & Pushed to TV!`);
       fetchLiveState();
     }
 
@@ -547,24 +791,39 @@
       const title = document.getElementById("videoTitleInput").value.trim() || "Broadcast Ad Spot";
       const sourceUrl = document.getElementById("streamUrlInput").value.trim();
       const targetDeviceId = document.getElementById("videoTargetDeviceSelect").value || "ALL";
-      await fetch("/api/videos", {
+      const vidId = `vid_${Date.now().toString(36)}`;
+      const res = await fetch("/api/videos", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, sourceUrl, targetDeviceId })
+        body: JSON.stringify({ id: vidId, title, sourceUrl, targetDeviceId })
       });
+      const data = await res.json().catch(() => ({}));
+      if (data && data.video) {
+        saveDeletedIdsToStorage(localDeletedIds.filter(id => id !== data.video.id));
+        saveVideosToStorage(localSavedVideos.filter(v => v.id !== data.video.id).concat(data.video));
+        selectedPreviewVideoId = data.video.id;
+      }
       document.getElementById("videoTitleInput").value = "";
       document.getElementById("streamUrlInput").value = "";
-      showToast(`Added '${title}' to live playlist!`);
+      showToast(`✔ Saved '${title}' to permanent playlist!`);
       fetchLiveState();
     }
 
     async function deleteVideo(videoId) {
+      // Explicitly add to deleted tombstones and remove from localStorage + IndexedDB
+      saveDeletedIdsToStorage([...localDeletedIds, videoId]);
+      saveVideosToStorage(localSavedVideos.filter(v => v.id !== videoId));
+      await deleteVideoBlobFromVault(videoId);
+      if (selectedPreviewVideoId === videoId) {
+        selectedPreviewVideoId = null;
+        lastPreviewUrl = "";
+      }
       await fetch("/api/videos/delete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ videoId })
       });
-      showToast("Removed video from playlist");
+      showToast("Deleted video from playlist & storage");
       fetchLiveState();
     }
 
@@ -593,8 +852,13 @@
       fetchLiveState();
     }
 
-    fetchLiveState();
-    setInterval(fetchLiveState, 2000);
+    // Boot sequence: restore IndexedDB blobs, render immediately from localStorage, then start 2.0s sync
+    (async function initDashboard() {
+      await restoreAllVideoBlobsFromVault();
+      renderDashboard();
+      await fetchLiveState();
+      setInterval(fetchLiveState, 2000);
+    })();
   </script>
 </body>
 </html>

@@ -225,11 +225,12 @@ fun TvDisplayClientScreen(
         }
     }
 
-    // Resilient streaming DataSource with fast 4000ms connection/read timeouts
+    // Resilient DataSource with Chrome User-Agent and redirect support
     val dataSourceFactory = remember(context) {
         val httpFactory = DefaultHttpDataSource.Factory()
-            .setConnectTimeoutMs(4000)
-            .setReadTimeoutMs(4000)
+            .setUserAgent("Mozilla/5.0 (Linux; Android 13; SignageTV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
+            .setConnectTimeoutMs(5000)
+            .setReadTimeoutMs(5000)
             .setAllowCrossProtocolRedirects(true)
         DefaultDataSource.Factory(context, httpFactory)
     }
@@ -246,6 +247,8 @@ fun TvDisplayClientScreen(
         exoPlayer.volume = if (liveState.isMuted) 0f else 1f
     }
 
+    var failedRemoteVideoIds by remember { mutableStateOf(setOf<String>()) }
+
     val effectiveVideos = remember(videos, allCloudVideos, forcedOfflineVideoId) {
         if (!forcedOfflineVideoId.isNullOrBlank()) {
             val combined = (videos + allCloudVideos).distinctBy { it.id }
@@ -256,32 +259,40 @@ fun TvDisplayClientScreen(
         }
     }
 
-    // Stable signature so ExoPlayer ONLY prepares when actual video items or offline files change
-    val playlistSignature = remember(effectiveVideos, isUsingBackupStream) {
-        effectiveVideos.joinToString("|") { v ->
-            val hasPlayableLocal = localManager.isRealMp4PlayableOffline(v.localFileName)
-            "${v.id}:${v.sourceUrl}:${v.localFileName}:$hasPlayableLocal"
-        } + ":backup=$isUsingBackupStream"
+    // Play verified local offline files first; also allow direct streaming while background caching completes
+    val playableVideos = remember(effectiveVideos, videos, allCloudVideos, chunkTelemetry.isActive, failedRemoteVideoIds) {
+        effectiveVideos.filter { v ->
+            val hasLocal = localManager.isRealMp4PlayableOffline(v.localFileName)
+            val hasValidRemote = v.sourceUrl.isNotBlank() &&
+                !v.sourceUrl.contains("commondatastorage.googleapis.com", ignoreCase = true) &&
+                !failedRemoteVideoIds.contains(v.id)
+            hasLocal || hasValidRemote
+        }
+    }
+
+    // Stable signature so ExoPlayer ONLY prepares when playable video URIs change
+    val playlistSignature = remember(playableVideos, chunkTelemetry.isActive) {
+        playableVideos.joinToString("|") { v ->
+            val hasLocal = localManager.isRealMp4PlayableOffline(v.localFileName)
+            "${v.id}:${v.localFileName}:local=$hasLocal:${v.sourceUrl}"
+        }
     }
 
     LaunchedEffect(playlistSignature) {
-        if (effectiveVideos.isEmpty()) {
+        if (playableVideos.isEmpty()) {
             exoPlayer.stop()
             exoPlayer.clearMediaItems()
-            viewModel.onActiveVideoChanged("Standby (Empty Playlist)")
+            val statusTitle = if (effectiveVideos.isEmpty()) {
+                "Standby (Empty Playlist)"
+            } else {
+                "Caching: ${effectiveVideos.first().title}"
+            }
+            viewModel.onActiveVideoChanged(statusTitle)
         } else {
             val concatenatingSource = ConcatenatingMediaSource()
-            effectiveVideos.forEach { video ->
-                val playableOfflineUri = if (!isUsingBackupStream && localManager.isRealMp4PlayableOffline(video.localFileName)) {
-                    localManager.getLocalVideoUri(video.localFileName)
-                } else null
-
-                val uriToPlay = when {
-                    playableOfflineUri != null -> playableOfflineUri
-                    isUsingBackupStream -> Uri.parse(video.backupUrl.ifBlank { SignageViewModel.VERIFIED_BACKUP_STREAM_URL })
-                    else -> Uri.parse(video.sourceUrl.ifBlank { SignageViewModel.VERIFIED_BACKUP_STREAM_URL })
-                }
-
+            playableVideos.forEach { video ->
+                val playableOfflineUri = localManager.getLocalVideoUri(video.localFileName)
+                val uriToPlay = playableOfflineUri ?: Uri.parse(localManager.sanitizeStreamUrl(video.sourceUrl))
                 val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
                     .createMediaSource(
                         MediaItem.Builder()
@@ -294,35 +305,35 @@ fun TvDisplayClientScreen(
             exoPlayer.setMediaSource(concatenatingSource)
             exoPlayer.prepare()
             exoPlayer.playWhenReady = true
-            val firstTitle = effectiveVideos.firstOrNull()?.title ?: "Playing"
+            val firstTitle = playableVideos.firstOrNull()?.title ?: "Playing"
             viewModel.onActiveVideoChanged(firstTitle)
         }
     }
 
-    DisposableEffect(exoPlayer, effectiveVideos) {
+    DisposableEffect(exoPlayer, playableVideos) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 isBufferingNow = (playbackState == Player.STATE_BUFFERING)
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                val idx = exoPlayer.currentMediaItemIndex.coerceIn(0, (effectiveVideos.size - 1).coerceAtLeast(0))
+                val idx = exoPlayer.currentMediaItemIndex.coerceIn(0, (playableVideos.size - 1).coerceAtLeast(0))
                 currentMediaIndex = idx
-                effectiveVideos.getOrNull(idx)?.let { activeVid ->
+                playableVideos.getOrNull(idx)?.let { activeVid ->
                     viewModel.onActiveVideoChanged(activeVid.title)
                 }
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                val activeVid = effectiveVideos.getOrNull(currentMediaIndex)
-                if (activeVid != null && localManager.isFileVerifiedCached(activeVid.localFileName)) {
-                    // Delete corrupt/partial local file and recover immediately via remote/backup stream
-                    localManager.deleteCachedVideoFile(activeVid.localFileName)
+                val activeVid = playableVideos.getOrNull(currentMediaIndex) ?: effectiveVideos.firstOrNull()
+                if (activeVid != null) {
+                    if (localManager.isFileVerifiedCached(activeVid.localFileName)) {
+                        localManager.deleteCachedVideoFile(activeVid.localFileName)
+                    } else {
+                        failedRemoteVideoIds = failedRemoteVideoIds + activeVid.id
+                    }
+                    viewModel.downloadCloudVideoForOfflineView(activeVid)
                 }
-                viewModel.onBufferingWatchdogTriggered(
-                    stalledVideoTitle = activeVid?.title ?: "Stream",
-                    reason = "ExoPlayer ${error.errorCodeName}"
-                )
             }
         }
         exoPlayer.addListener(listener)
@@ -337,24 +348,15 @@ fun TvDisplayClientScreen(
         }
     }
 
-    LaunchedEffect(isBufferingNow, playlistSignature) {
-        if (isBufferingNow && effectiveVideos.isNotEmpty() && !isUsingBackupStream) {
-            delay(3500L)
-            if (isBufferingNow) {
-                val stalledTitle = effectiveVideos.getOrNull(currentMediaIndex)?.title ?: "Active Ad Stream"
-                viewModel.onBufferingWatchdogTriggered(
-                    stalledVideoTitle = stalledTitle,
-                    reason = "Buffering exceeded 3.5s threshold"
-                )
-            }
-        }
-    }
-
     val resizeMode = when (liveState.scaleMode) {
         "FILL" -> AspectRatioFrameLayout.RESIZE_MODE_FILL
         "ZOOM" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
         else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
     }
+
+    val activePreviewTitle = playableVideos.getOrNull(currentMediaIndex)?.title
+        ?: effectiveVideos.firstOrNull()?.title
+        ?: "Standby"
 
     Box(
         modifier = Modifier
@@ -373,7 +375,7 @@ fun TvDisplayClientScreen(
                 }
             }
     ) {
-        // 1. Video Player Canvas or Empty-State Broadcast Standby Screen
+        // 1. Video Player Canvas or Broadcast Standby / Caching Screen
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -382,7 +384,7 @@ fun TvDisplayClientScreen(
                 },
             contentAlignment = Alignment.Center
         ) {
-            if (effectiveVideos.isEmpty()) {
+            if (playableVideos.isEmpty()) {
                 StandbyPairingBroadcastCanvas(
                     isWebCmsConnected = isWebCmsConnected,
                     deviceName = deviceName,
@@ -394,7 +396,7 @@ fun TvDisplayClientScreen(
                     lastSyncCycleCount = lastSyncCycleCount,
                     onOpenAdminHubWithPin = { tabIdx -> viewModel.onGreenStarAdminClick(tabIdx) }
                 )
-            } else {
+            } else if (!isAdminPanelOpen) {
                 AndroidView(
                     factory = { ctx ->
                         PlayerView(ctx).apply {
@@ -406,6 +408,9 @@ fun TvDisplayClientScreen(
                     update = { playerView ->
                         playerView.player = exoPlayer
                         playerView.resizeMode = resizeMode
+                    },
+                    onRelease = { playerView ->
+                        playerView.player = null
                     },
                     modifier = Modifier
                         .fillMaxSize()
@@ -523,7 +528,7 @@ fun TvDisplayClientScreen(
             }
         }
 
-        // 4. Full-Screen Admin Hub with Top Back Button & Bottom Navigation Bar
+        // 4. Full-Screen Admin Hub with Top Back Button, Live Video Preview & Bottom Navigation Bar
         AnimatedVisibility(
             visible = isAdminPanelOpen,
             enter = fadeIn(),
@@ -533,6 +538,10 @@ fun TvDisplayClientScreen(
             AdminFullScreenHub(
                 selectedTab = selectedSidebarTab,
                 onSelectTab = { viewModel.selectSidebarTab(it) },
+                exoPlayer = exoPlayer,
+                hasPlayableVideo = playableVideos.isNotEmpty(),
+                activePreviewTitle = activePreviewTitle,
+                resizeMode = resizeMode,
                 permissionsStatus = permissionsStatus,
                 onRefreshPermissions = {
                     permissionsStatus = KioskPermissionHelper.checkAllPermissions(context)
@@ -568,7 +577,9 @@ fun TvDisplayClientScreen(
                 onSaveSettings = { viewModel.saveAllDisplayAndRotationSettings() },
                 onDownloadCloudVideoOffline = { viewModel.downloadCloudVideoForOfflineView(it) },
                 onDownloadAllCloudVideosOffline = { viewModel.downloadAllCloudVideosOffline() },
-                onPlayVideoOfflineNow = { viewModel.playVideoOfflineNow(it) },
+                onPlayVideoOfflineNow = { vid, closeAdmin ->
+                    viewModel.playVideoOfflineNow(vid, closeAdminForFullScreen = closeAdmin)
+                },
                 onClearForcedOfflineVideo = { viewModel.clearForcedSingleOfflineVideo() },
                 onIngestLocalVideo = { uri, title -> viewModel.ingestLocalVideoForOfflineCache(uri, title) },
                 onDeleteVideo = { viewModel.deleteVideoFromPlaylist(it) },
@@ -1061,10 +1072,142 @@ private data class BottomNavPageItem(
     val icon: ImageVector
 )
 
+@OptIn(UnstableApi::class)
+@Composable
+private fun InlineLiveVideoPreviewCard(
+    exoPlayer: ExoPlayer,
+    hasPlayableVideo: Boolean,
+    activePreviewTitle: String,
+    videoRotateDegrees: Int,
+    scaleMode: String,
+    resizeMode: Int,
+    onOpenFullScreen: () -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = ControlDeckSurface),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, ElectricCyan.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "LIVE VIDEO PREVIEW (100% ORIGINAL QUALITY)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ElectricCyan,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "$activePreviewTitle • Rotate: ${videoRotateDegrees}° • Scale: $scaleMode",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                OutlinedButton(
+                    onClick = onOpenFullScreen,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.height(34.dp)
+                ) {
+                    Icon(imageVector = Icons.Default.Tv, contentDescription = null, modifier = Modifier.size(15.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Full Screen TV", fontSize = 11.sp, maxLines = 1)
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(175.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(ObsidianBackground)
+                    .border(1.dp, BorderSlate, RoundedCornerShape(12.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                if (hasPlayableVideo) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                rotationZ = videoRotateDegrees.toFloat()
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        AndroidView(
+                            factory = { ctx ->
+                                PlayerView(ctx).apply {
+                                    useController = true
+                                    controllerShowTimeoutMs = 2000
+                                    player = exoPlayer
+                                    this.resizeMode = resizeMode
+                                }
+                            },
+                            update = { playerView ->
+                                playerView.player = exoPlayer
+                                playerView.resizeMode = resizeMode
+                            },
+                            onRelease = { playerView ->
+                                playerView.player = null
+                            },
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .testTag("admin_inline_video_preview")
+                        )
+                    }
+                } else {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier.padding(16.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.VideoLibrary,
+                            contentDescription = null,
+                            tint = TextMuted,
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "No video playing yet — upload in Web Dashboard or tap 'Add Local Video' in Videos tab",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun formatVideoBytesReadable(bytes: Long): String {
+    if (bytes <= 0L) return "Original Quality"
+    val mb = bytes.toDouble() / (1024.0 * 1024.0)
+    return if (mb >= 1.0) {
+        String.format(java.util.Locale.US, "%.2f MB", mb)
+    } else {
+        "${(bytes / 1024L).coerceAtLeast(1L)} KB"
+    }
+}
+
 @Composable
 private fun AdminFullScreenHub(
     selectedTab: Int,
     onSelectTab: (Int) -> Unit,
+    exoPlayer: ExoPlayer,
+    hasPlayableVideo: Boolean,
+    activePreviewTitle: String,
+    resizeMode: Int,
     permissionsStatus: KioskPermissionsStatus,
     onRefreshPermissions: () -> Unit,
     cmsServerUrl: String,
@@ -1096,7 +1239,7 @@ private fun AdminFullScreenHub(
     onSaveSettings: () -> Unit,
     onDownloadCloudVideoOffline: (PlaylistVideo) -> Unit,
     onDownloadAllCloudVideosOffline: () -> Unit,
-    onPlayVideoOfflineNow: (PlaylistVideo) -> Unit,
+    onPlayVideoOfflineNow: (PlaylistVideo, Boolean) -> Unit,
     onClearForcedOfflineVideo: () -> Unit,
     onIngestLocalVideo: (Uri, String) -> Unit,
     onDeleteVideo: (PlaylistVideo) -> Unit,
@@ -1274,6 +1417,10 @@ private fun AdminFullScreenHub(
             ) {
                 when (selectedTab) {
                     0 -> AdminOrientationAndRotatePage(
+                        exoPlayer = exoPlayer,
+                        hasPlayableVideo = hasPlayableVideo,
+                        activePreviewTitle = activePreviewTitle,
+                        resizeMode = resizeMode,
                         screenOrientation = screenOrientation,
                         videoRotateDegrees = videoRotateDegrees,
                         liveState = liveState,
@@ -1283,7 +1430,8 @@ private fun AdminFullScreenHub(
                         onSetScaleMode = onSetScaleMode,
                         onToggleMute = onToggleMute,
                         onToggleKioskLock = onToggleKioskLock,
-                        onSaveSettings = onSaveSettings
+                        onSaveSettings = onSaveSettings,
+                        onOpenFullScreen = onClose
                     )
                     1 -> AdminPairingAndSyncPage(
                         cmsServerUrl = cmsServerUrl,
@@ -1296,6 +1444,12 @@ private fun AdminFullScreenHub(
                         onForceSync = onForceSync
                     )
                     2 -> AdminCloudAndOfflineVideosPage(
+                        exoPlayer = exoPlayer,
+                        hasPlayableVideo = hasPlayableVideo,
+                        activePreviewTitle = activePreviewTitle,
+                        videoRotateDegrees = videoRotateDegrees,
+                        scaleMode = liveState.scaleMode,
+                        resizeMode = resizeMode,
                         videos = combinedVideos,
                         forcedOfflineVideoId = forcedOfflineVideoId,
                         chunkTelemetry = chunkTelemetry,
@@ -1305,7 +1459,8 @@ private fun AdminFullScreenHub(
                         onPlayVideoOfflineNow = onPlayVideoOfflineNow,
                         onClearForcedOfflineVideo = onClearForcedOfflineVideo,
                         onIngestLocalVideo = onIngestLocalVideo,
-                        onDeleteVideo = onDeleteVideo
+                        onDeleteVideo = onDeleteVideo,
+                        onOpenFullScreen = onClose
                     )
                     3 -> Admin24x7PermissionsAndBootPage(
                         permissionsStatus = permissionsStatus,
@@ -1330,6 +1485,10 @@ private fun AdminFullScreenHub(
 @kotlin.OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AdminOrientationAndRotatePage(
+    exoPlayer: ExoPlayer,
+    hasPlayableVideo: Boolean,
+    activePreviewTitle: String,
+    resizeMode: Int,
     screenOrientation: String,
     videoRotateDegrees: Int,
     liveState: LiveState,
@@ -1339,7 +1498,8 @@ private fun AdminOrientationAndRotatePage(
     onSetScaleMode: (String) -> Unit,
     onToggleMute: (Boolean) -> Unit,
     onToggleKioskLock: (Boolean) -> Unit,
-    onSaveSettings: () -> Unit
+    onSaveSettings: () -> Unit,
+    onOpenFullScreen: () -> Unit
 ) {
     val rotationAngles = listOf(0, 90, 180, 270)
     val scaleOptions = listOf(
@@ -1354,6 +1514,17 @@ private fun AdminOrientationAndRotatePage(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // Live Video Preview Monitor right at the top of Rotate Tab
+        InlineLiveVideoPreviewCard(
+            exoPlayer = exoPlayer,
+            hasPlayableVideo = hasPlayableVideo,
+            activePreviewTitle = activePreviewTitle,
+            videoRotateDegrees = videoRotateDegrees,
+            scaleMode = liveState.scaleMode,
+            resizeMode = resizeMode,
+            onOpenFullScreen = onOpenFullScreen
+        )
+
         // 1. Video Rotate Card (+90° / -90° / 0° / 90° / 180° / 270°)
         Card(
             colors = CardDefaults.cardColors(containerColor = ControlDeckSurface),
@@ -1516,7 +1687,7 @@ private fun AdminOrientationAndRotatePage(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "3. TV Screen Orientation (Landscape / Portrait)",
+                    text = "3. TV Screen Orientation (Landscape / Portrait — Locked Until You Change It)",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = ElectricCyan
@@ -1618,7 +1789,7 @@ private fun AdminPairingAndSyncPage(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Card(
             colors = CardDefaults.cardColors(containerColor = ControlDeckSurface),
@@ -1730,21 +1901,28 @@ private fun AdminPairingAndSyncPage(
 }
 
 // ----------------------------------------------------------------------------
-// PAGE 2: Cloud Videos & "Download Offline View" Inside the App
+// PAGE 2: Cloud Videos, Live Video Preview & "Download Offline View"
 // ----------------------------------------------------------------------------
 
 @Composable
 private fun AdminCloudAndOfflineVideosPage(
+    exoPlayer: ExoPlayer,
+    hasPlayableVideo: Boolean,
+    activePreviewTitle: String,
+    videoRotateDegrees: Int,
+    scaleMode: String,
+    resizeMode: Int,
     videos: List<PlaylistVideo>,
     forcedOfflineVideoId: String?,
     chunkTelemetry: ChunkTransferTelemetry,
     localManager: ChunkedStorageAndOtaManager,
     onDownloadCloudVideoOffline: (PlaylistVideo) -> Unit,
     onDownloadAllCloudVideosOffline: () -> Unit,
-    onPlayVideoOfflineNow: (PlaylistVideo) -> Unit,
+    onPlayVideoOfflineNow: (PlaylistVideo, Boolean) -> Unit,
     onClearForcedOfflineVideo: () -> Unit,
     onIngestLocalVideo: (Uri, String) -> Unit,
-    onDeleteVideo: (PlaylistVideo) -> Unit
+    onDeleteVideo: (PlaylistVideo) -> Unit,
+    onOpenFullScreen: () -> Unit
 ) {
     val photoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -1754,7 +1932,18 @@ private fun AdminCloudAndOfflineVideosPage(
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        // Inline Live Video Preview Player inside the Videos tab
+        InlineLiveVideoPreviewCard(
+            exoPlayer = exoPlayer,
+            hasPlayableVideo = hasPlayableVideo,
+            activePreviewTitle = activePreviewTitle,
+            videoRotateDegrees = videoRotateDegrees,
+            scaleMode = scaleMode,
+            resizeMode = resizeMode,
+            onOpenFullScreen = onOpenFullScreen
+        )
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1838,11 +2027,11 @@ private fun AdminCloudAndOfflineVideosPage(
                         imageVector = Icons.Default.VideoLibrary,
                         contentDescription = null,
                         tint = TextMuted,
-                        modifier = Modifier.size(40.dp)
+                        modifier = Modifier.size(36.dp)
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "No Cloud videos synced yet.\nUpload a video in your Web Dashboard (https://tv-br.vercel.app) or tap 'Add Local Video' above.",
+                        text = "No videos uploaded yet.\nUpload in Web Dashboard (https://tv-br.vercel.app) or tap 'Add Local Video' above.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = TextSecondary,
                         textAlign = TextAlign.Center
@@ -1857,6 +2046,7 @@ private fun AdminCloudAndOfflineVideosPage(
                 items(videos, key = { it.id }) { video ->
                     val isRealOfflineSaved = localManager.isRealMp4PlayableOffline(video.localFileName)
                     val localBytes = localManager.getLocalFileSizeBytes(video.localFileName)
+                    val effectiveBytes = if (localBytes > 0L) localBytes else video.sizeBytes
                     val isThisVideoForced = forcedOfflineVideoId == video.id
 
                     Card(
@@ -1866,7 +2056,7 @@ private fun AdminCloudAndOfflineVideosPage(
                             .fillMaxWidth()
                             .border(
                                 1.dp,
-                                if (isRealOfflineSaved) SignalGreen.copy(alpha = 0.5f) else BorderSlate,
+                                if (isThisVideoForced) ElectricCyan else if (isRealOfflineSaved) SignalGreen.copy(alpha = 0.5f) else BorderSlate,
                                 RoundedCornerShape(14.dp)
                             )
                     ) {
@@ -1898,9 +2088,9 @@ private fun AdminCloudAndOfflineVideosPage(
                                         ) {
                                             Text(
                                                 text = if (isRealOfflineSaved) {
-                                                    "✔ Offline (${(localBytes / 1024).coerceAtLeast(1)} KB)"
+                                                    "✔ Offline (${formatVideoBytesReadable(effectiveBytes)})"
                                                 } else {
-                                                    "☁ Cloud Stream"
+                                                    "☁ Cloud (${formatVideoBytesReadable(effectiveBytes)})"
                                                 },
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = if (isRealOfflineSaved) SignalGreen else ElectricCyan,
@@ -1911,7 +2101,7 @@ private fun AdminCloudAndOfflineVideosPage(
                                     }
                                     Spacer(modifier = Modifier.height(2.dp))
                                     Text(
-                                        text = "File: ${video.localFileName}",
+                                        text = "100% Original Quality • Saved Permanently Until Deleted",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = TextSecondary,
                                         maxLines = 1,
@@ -1953,24 +2143,24 @@ private fun AdminCloudAndOfflineVideosPage(
                                         contentDescription = null,
                                         modifier = Modifier.size(16.dp)
                                     )
-                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = if (isRealOfflineSaved) "✔ Offline Saved" else "Download Offline View",
+                                        text = if (isRealOfflineSaved) "✔ Offline Saved" else "Download Offline",
                                         fontWeight = FontWeight.Bold,
-                                        fontSize = 12.sp,
+                                        fontSize = 11.sp,
                                         maxLines = 1
                                     )
                                 }
 
                                 Button(
-                                    onClick = { onPlayVideoOfflineNow(video) },
+                                    onClick = { onPlayVideoOfflineNow(video, false) },
                                     modifier = Modifier
                                         .height(42.dp)
-                                        .testTag("play_offline_view_button_${video.id}"),
+                                        .testTag("preview_video_button_${video.id}"),
                                     shape = RoundedCornerShape(10.dp),
                                     colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (isThisVideoForced) SignalGreen else BroadcastIndigo,
-                                        contentColor = if (isThisVideoForced) ObsidianBackground else Color.White
+                                        containerColor = if (isThisVideoForced) SignalGreen else ControlDeckSurfaceVariant,
+                                        contentColor = if (isThisVideoForced) ObsidianBackground else ElectricCyan
                                     )
                                 ) {
                                     Icon(
@@ -1980,9 +2170,34 @@ private fun AdminCloudAndOfflineVideosPage(
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = if (isThisVideoForced) "Playing" else "Play Offline View",
+                                        text = "Preview",
                                         fontWeight = FontWeight.Bold,
-                                        fontSize = 12.sp,
+                                        fontSize = 11.sp,
+                                        maxLines = 1
+                                    )
+                                }
+
+                                Button(
+                                    onClick = { onPlayVideoOfflineNow(video, true) },
+                                    modifier = Modifier
+                                        .height(42.dp)
+                                        .testTag("play_offline_view_button_${video.id}"),
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = BroadcastIndigo,
+                                        contentColor = Color.White
+                                    )
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Tv,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "Full Screen",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp,
                                         maxLines = 1
                                     )
                                 }
