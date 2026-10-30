@@ -17,28 +17,17 @@ class BootCompletedReceiver : BroadcastReceiver() {
         val action = intent?.action ?: return
         if (action == Intent.ACTION_BOOT_COMPLETED ||
             action == Intent.ACTION_LOCKED_BOOT_COMPLETED ||
-            action == Intent.ACTION_MY_PACKAGE_REPLACED ||
             action == Intent.ACTION_USER_PRESENT ||
             action == "android.intent.action.QUICKBOOT_POWERON" ||
             action == "com.htc.intent.action.QUICKBOOT_POWERON"
         ) {
+            try {
+                com.example.data.local.ChunkedStorageAndOtaManager(context.applicationContext)
+                    .setTemporaryExitBypass(false)
+            } catch (_: Throwable) {
+            }
             Log.i("PulseCastBoot", "Boot signal received ($action). Launching MainActivity for 24x7 signage...")
-            val appContext = context.applicationContext
-            launchSignageActivity(appContext)
-
-            // Also re-assert foreground after 2.5s in case the Android TV stock launcher initializes slightly after BOOT_COMPLETED
-            val pendingResult = goAsync()
-            Handler(Looper.getMainLooper()).postDelayed({
-                try {
-                    launchSignageActivity(appContext)
-                } catch (_: Throwable) {
-                } finally {
-                    try {
-                        pendingResult.finish()
-                    } catch (_: Throwable) {
-                    }
-                }
-            }, 2500L)
+            launchSignageActivity(context.applicationContext)
         }
     }
 

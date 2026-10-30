@@ -25,11 +25,14 @@ class SignageGuardAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         try {
+            localManager.setTemporaryExitBypass(false)
             // Always launch MainActivity when the Accessibility Service starts on TV boot / power-on
             bringSignageToFrontIfNeeded()
             mainHandler.postDelayed({
                 try {
-                    bringSignageToFrontIfNeeded()
+                    if (!localManager.isTemporaryExitBypassActive()) {
+                        bringSignageToFrontIfNeeded()
+                    }
                 } catch (_: Throwable) {
                 }
             }, 2500L)
@@ -54,7 +57,7 @@ class SignageGuardAccessibilityService : AccessibilityService() {
                 return
             }
 
-            if (localManager.getSavedDisplaySettings().kioskLocked) {
+            if (localManager.getSavedDisplaySettings().kioskLocked && !localManager.isTemporaryExitBypassActive()) {
                 val now = System.currentTimeMillis()
                 if (now - lastRelaunchEpochMs > 3000L) {
                     lastRelaunchEpochMs = now

@@ -63,7 +63,7 @@ class SignageViewModel(
     private val _deviceName = MutableStateFlow(localManager.getOrCreateDeviceName())
     val deviceName: StateFlow<String> = _deviceName.asStateFlow()
 
-    private val _assignedVideoId = MutableStateFlow("ALL")
+    private val _assignedVideoId = MutableStateFlow(initialSavedSettings.assignedVideoId.ifBlank { "ALL" })
     val assignedVideoId: StateFlow<String> = _assignedVideoId.asStateFlow()
 
     // Display, Screen Orientation & Video Rotation States (Initialized from Saved Settings)
@@ -84,13 +84,24 @@ class SignageViewModel(
     )
     val liveState: StateFlow<LiveState> = _liveState.asStateFlow()
 
-    private val _videos = MutableStateFlow<List<PlaylistVideo>>(initialSavedVideos)
+    private val _videos = MutableStateFlow<List<PlaylistVideo>>(
+        if (initialSavedSettings.assignedVideoId.isNotBlank() && initialSavedSettings.assignedVideoId != "ALL") {
+            val filtered = initialSavedVideos.filter { it.id == initialSavedSettings.assignedVideoId }
+            if (filtered.isNotEmpty()) filtered else initialSavedVideos
+        } else {
+            initialSavedVideos
+        }
+    )
     val videos: StateFlow<List<PlaylistVideo>> = _videos.asStateFlow()
 
     private val _allCloudVideos = MutableStateFlow<List<PlaylistVideo>>(initialSavedVideos)
     val allCloudVideos: StateFlow<List<PlaylistVideo>> = _allCloudVideos.asStateFlow()
 
-    private val _forcedOfflineVideoId = MutableStateFlow<String?>(null)
+    private val _forcedOfflineVideoId = MutableStateFlow<String?>(
+        initialSavedSettings.forcedOfflineVideoId?.takeIf { forcedId ->
+            initialSavedVideos.any { it.id == forcedId }
+        }
+    )
     val forcedOfflineVideoId: StateFlow<String?> = _forcedOfflineVideoId.asStateFlow()
 
     private val _otaSlotState = MutableStateFlow(localManager.getOtaSlotState())
@@ -109,7 +120,7 @@ class SignageViewModel(
     val diagnosticLogs: StateFlow<List<DiagnosticLogEntry>> = _diagnosticLogs.asStateFlow()
 
     private val _currentlyPlayingTitle = MutableStateFlow(
-        initialSavedVideos.firstOrNull()?.title ?: "Standby (Empty Playlist)"
+        _videos.value.firstOrNull()?.title ?: "Standby (Empty Playlist)"
     )
     val currentlyPlayingTitle: StateFlow<String> = _currentlyPlayingTitle.asStateFlow()
 
@@ -136,6 +147,7 @@ class SignageViewModel(
     private var otaProcessingInFlight = false
     private var autoCachingInFlight = false
     private var reseedUploadInFlight = false
+    private var lastServerSettingsSyncPushMs: Long = 0L
     private val lastAutoCacheAttemptMs = mutableMapOf<String, Long>()
     private val lastReseedAttemptMs = mutableMapOf<String, Long>()
     private val failedAutoCacheCounts = mutableMapOf<String, Int>()
@@ -143,15 +155,25 @@ class SignageViewModel(
         initialSavedVideos.forEach { add(it.id) }
     }
     private var lastSeenPushCommand: String = ""
-    private var localSettingsUpdatedAtMs: Long = initialSavedSettings.settingsUpdatedAtMs.coerceAtLeast(1L)
-    private var hasLocalSettingsOverride: Boolean = initialSavedSettings.hasLocalOverrideSaved
+    private var localSettingsUpdatedAtMs: Long = if (initialSavedSettings.settingsUpdatedAtMs > 0L) {
+        initialSavedSettings.settingsUpdatedAtMs
+    } else {
+        System.currentTimeMillis()
+    }
+    private var hasLocalSettingsOverride: Boolean = true
     private val cornerTapTimestamps = mutableListOf<Long>()
 
     init {
+        // Clear any temporary intentional-exit bypass when the app starts normally or on boot
+        localManager.setTemporaryExitBypass(false)
+        // Ensure initial settings are locked synchronously on disk with a valid non-zero timestamp
+        if (initialSavedSettings.settingsUpdatedAtMs <= 0L) {
+            persistCurrentSettingsLocally()
+        }
         appendLog(
             LogLevel.INFO,
             "BOOT",
-            "PulseCast Android TV ready (${initialSavedVideos.size} saved offline video(s)). Orientation: ${_screenOrientation.value}, Rotate: ${_videoRotateDegrees.value}°, Scale: ${_liveState.value.scaleMode}"
+            "PulseCast Android TV ready (${initialSavedVideos.size} saved offline video(s)). Locked Settings: Orientation=${_screenOrientation.value}, Rotate=${_videoRotateDegrees.value}°, Scale=${_liveState.value.scaleMode}"
         )
         appendLog(
             LogLevel.INFO,
@@ -174,6 +196,8 @@ class SignageViewModel(
                     videoRotateDegrees = _videoRotateDegrees.value,
                     scaleMode = _liveState.value.scaleMode,
                     isMuted = _liveState.value.isMuted,
+                    kioskLocked = _liveState.value.kioskLocked,
+                    assignedVideoId = _assignedVideoId.value,
                     currentVideoTitle = _currentlyPlayingTitle.value,
                     settingsUpdatedAtMs = localSettingsUpdatedAtMs
                 ).onSuccess {
@@ -203,6 +227,8 @@ class SignageViewModel(
                                 videoRotateDegrees = _videoRotateDegrees.value,
                                 scaleMode = _liveState.value.scaleMode,
                                 isMuted = _liveState.value.isMuted,
+                                kioskLocked = _liveState.value.kioskLocked,
+                                assignedVideoId = _assignedVideoId.value,
                                 currentVideoTitle = _currentlyPlayingTitle.value,
                                 settingsUpdatedAtMs = localSettingsUpdatedAtMs
                             )
@@ -237,6 +263,8 @@ class SignageViewModel(
                 videoRotateDegrees = _videoRotateDegrees.value,
                 scaleMode = _liveState.value.scaleMode,
                 isMuted = _liveState.value.isMuted,
+                kioskLocked = _liveState.value.kioskLocked,
+                assignedVideoId = _assignedVideoId.value,
                 currentVideoTitle = _currentlyPlayingTitle.value,
                 settingsUpdatedAtMs = localSettingsUpdatedAtMs
             ).onSuccess {
@@ -298,6 +326,8 @@ class SignageViewModel(
                 videoRotateDegrees = _videoRotateDegrees.value,
                 scaleMode = _liveState.value.scaleMode,
                 isMuted = _liveState.value.isMuted,
+                kioskLocked = _liveState.value.kioskLocked,
+                assignedVideoId = _assignedVideoId.value,
                 currentVideoTitle = _currentlyPlayingTitle.value,
                 settingsUpdatedAtMs = localSettingsUpdatedAtMs
             )
@@ -340,6 +370,8 @@ class SignageViewModel(
             currentVideoRotateDegrees = _videoRotateDegrees.value,
             currentScaleMode = _liveState.value.scaleMode,
             currentIsMuted = _liveState.value.isMuted,
+            currentKioskLocked = _liveState.value.kioskLocked,
+            currentAssignedVideoId = _assignedVideoId.value,
             settingsUpdatedAtMs = localSettingsUpdatedAtMs,
             currentVideoTitle = _currentlyPlayingTitle.value,
             cachedVideoCount = verifiedCount,
@@ -361,12 +393,8 @@ class SignageViewModel(
                 )
             }
 
-            if (payload.deviceName.isNotBlank() && payload.deviceName != _deviceName.value) {
-                _deviceName.value = localManager.setDeviceName(payload.deviceName)
-            }
-
-            // Apply remote orientation/rotation/scale whenever Web CMS has a newer timestamp OR sends an explicit
-            // DEVICE_CTRL / GLOBAL_STATE push command. Cold serverless instances with timestamp 0 NEVER flip the screen!
+            // Apply remote orientation/rotation/scale ONLY when Web CMS has a strictly newer timestamp OR sends an explicit
+            // DEVICE_CTRL / GLOBAL_STATE push command. Cold serverless instances or restarts NEVER alter locked settings!
             val remoteState = payload.liveState
             val isNewPushCommand = remoteState.lastPushCommand.isNotBlank() &&
                 remoteState.lastPushCommand != lastSeenPushCommand &&
@@ -374,14 +402,25 @@ class SignageViewModel(
             val isRemoteControlPush = isNewPushCommand &&
                 (remoteState.lastPushCommand.startsWith("DEVICE_CTRL") ||
                     remoteState.lastPushCommand.startsWith("GLOBAL_STATE"))
-            val isRemoteSettingsNewer = payload.remoteSettingsUpdatedAtMs > localSettingsUpdatedAtMs || isRemoteControlPush
+            val isRemoteSettingsNewer = (payload.remoteSettingsUpdatedAtMs > localSettingsUpdatedAtMs) || isRemoteControlPush
 
             if (isRemoteSettingsNewer) {
                 val prevOrient = _screenOrientation.value
                 val prevRotateDeg = _videoRotateDegrees.value
                 val prevScale = _liveState.value.scaleMode
 
-                localSettingsUpdatedAtMs = maxOf(localSettingsUpdatedAtMs, payload.remoteSettingsUpdatedAtMs)
+                if (payload.deviceName.isNotBlank() && payload.deviceName != _deviceName.value) {
+                    _deviceName.value = localManager.setDeviceName(payload.deviceName)
+                }
+                if (payload.assignedVideoId.isNotBlank()) {
+                    _assignedVideoId.value = payload.assignedVideoId
+                }
+
+                localSettingsUpdatedAtMs = maxOf(
+                    localSettingsUpdatedAtMs + 1L,
+                    payload.remoteSettingsUpdatedAtMs,
+                    System.currentTimeMillis()
+                )
                 applyRemoteOrientationToState(remoteState.orientation, payload.videoRotateDegrees)
                 _liveState.value = remoteState.copy(
                     orientation = computeCombinedOrientation(_screenOrientation.value, _videoRotateDegrees.value)
@@ -396,24 +435,34 @@ class SignageViewModel(
                     showToast("Web CMS: Scale -> ${remoteState.scaleMode}")
                 }
             } else {
-                // Keep current orientation, video rotation & scale untouched while updating push/OTA metadata
+                // Keep current orientation, video rotation, scale mode, mute, kiosk lock & assigned video 100% locked!
                 _liveState.value = _liveState.value.copy(
                     lastPushCommand = remoteState.lastPushCommand,
                     activeOtaVersionCode = remoteState.activeOtaVersionCode,
                     activeOtaVersionName = remoteState.activeOtaVersionName,
                     adminPin = remoteState.adminPin.ifBlank { _liveState.value.adminPin }
                 )
+                // If the server cold-started or has an older timestamp than our locked settings, push our locked settings back to the server
+                val nowMs = System.currentTimeMillis()
+                if (payload.remoteSettingsUpdatedAtMs < localSettingsUpdatedAtMs &&
+                    nowMs - lastServerSettingsSyncPushMs > 6000L
+                ) {
+                    lastServerSettingsSyncPushMs = nowMs
+                    pushLockedSettingsToServerSilently()
+                }
             }
-
-            _assignedVideoId.value = payload.assignedVideoId
 
             if (isNewPushCommand &&
                 (remoteState.lastPushCommand.startsWith("PUSH_PLAY") ||
                     remoteState.lastPushCommand.startsWith("UPLOAD_PLAY") ||
                     remoteState.lastPushCommand.startsWith("ADD_VIDEO"))
             ) {
+                if (payload.assignedVideoId.isNotBlank()) {
+                    _assignedVideoId.value = payload.assignedVideoId
+                }
                 _isUsingBackupStream.value = false
                 _forcedOfflineVideoId.value = null
+                persistCurrentSettingsLocally()
                 lastAutoCacheAttemptMs.clear()
                 failedAutoCacheCounts.clear()
                 showToast("▶ Web CMS Video Push received — Playing now!")
@@ -500,7 +549,7 @@ class SignageViewModel(
             val mergedAllList = localManager.sortAndNormalizeReelsInLine(mergedAllMap.values.toList())
             localManager.savePlaylistVideos(mergedAllList)
 
-            val assignedId = payload.assignedVideoId
+            val assignedId = _assignedVideoId.value
             val mergedActiveList = if (assignedId.isNotBlank() && assignedId != "ALL") {
                 val filtered = mergedAllList.filter { it.id == assignedId }
                 if (filtered.isNotEmpty()) filtered else mergedAllList
@@ -510,6 +559,7 @@ class SignageViewModel(
 
             if (brandNewRemoteVideo != null) {
                 _forcedOfflineVideoId.value = null
+                persistCurrentSettingsLocally()
                 lastAutoCacheAttemptMs.remove(brandNewRemoteVideo.id)
                 appendLog(
                     LogLevel.INFO,
@@ -762,6 +812,8 @@ class SignageViewModel(
             scaleMode = _liveState.value.scaleMode,
             isMuted = _liveState.value.isMuted,
             kioskLocked = _liveState.value.kioskLocked,
+            assignedVideoId = _assignedVideoId.value.ifBlank { "ALL" },
+            forcedOfflineVideoId = _forcedOfflineVideoId.value,
             syncIntervalSeconds = 2,
             hasLocalOverrideSaved = true,
             settingsUpdatedAtMs = localSettingsUpdatedAtMs
@@ -769,15 +821,13 @@ class SignageViewModel(
         localManager.saveDisplaySettings(settingsToSave)
     }
 
-    private fun lockAndPushDisplaySettings() {
-        hasLocalSettingsOverride = true
-        localSettingsUpdatedAtMs = System.currentTimeMillis()
-        persistCurrentSettingsLocally()
+    private fun pushLockedSettingsToServerSilently() {
         val orient = _screenOrientation.value
         val rot = _videoRotateDegrees.value
         val scale = _liveState.value.scaleMode
         val muted = _liveState.value.isMuted
         val kiosk = _liveState.value.kioskLocked
+        val assignedVid = _assignedVideoId.value.ifBlank { "ALL" }
         val ts = localSettingsUpdatedAtMs
 
         viewModelScope.launch {
@@ -791,10 +841,18 @@ class SignageViewModel(
                     "scaleMode" to scale,
                     "isMuted" to muted,
                     "kioskLocked" to kiosk,
+                    "assignedVideoId" to assignedVid,
                     "settingsUpdatedAtMs" to ts
                 )
             )
         }
+    }
+
+    private fun lockAndPushDisplaySettings() {
+        hasLocalSettingsOverride = true
+        localSettingsUpdatedAtMs = maxOf(System.currentTimeMillis(), localSettingsUpdatedAtMs + 1L)
+        persistCurrentSettingsLocally()
+        pushLockedSettingsToServerSilently()
     }
 
     fun setScreenOrientationMode(screenOrient: String) {
@@ -837,6 +895,17 @@ class SignageViewModel(
     fun toggleKioskLock(locked: Boolean) {
         _liveState.value = _liveState.value.copy(kioskLocked = locked)
         lockAndPushDisplaySettings()
+    }
+
+    fun prepareForIntentionalAppExit() {
+        _isAutoSyncEnabled.value = false
+        syncLoopJob?.cancel()
+        _isAdminPanelOpen.value = false
+        _isPinDialogVisible.value = false
+        // Activate temporary exit bypass so AccessibilityService does not relaunch right now,
+        // WITHOUT changing the user's saved kioskLocked or display settings!
+        localManager.setTemporaryExitBypass(true)
+        persistCurrentSettingsLocally()
     }
 
     private fun computeCombinedOrientation(screenOrient: String, rotateDeg: Int): String {
@@ -1032,6 +1101,7 @@ class SignageViewModel(
             downloadCloudVideoForOfflineView(video)
         }
         _forcedOfflineVideoId.value = video.id
+        persistCurrentSettingsLocally()
         if (_videos.value.none { it.id == video.id }) {
             _videos.value = localManager.sortAndNormalizeReelsInLine(_videos.value + video)
         }
@@ -1044,6 +1114,7 @@ class SignageViewModel(
 
     fun clearForcedSingleOfflineVideo() {
         _forcedOfflineVideoId.value = null
+        persistCurrentSettingsLocally()
         showToast("Looping all reels in line (reel-1, reel-2...)")
     }
 
@@ -1092,6 +1163,7 @@ class SignageViewModel(
                 _videos.value = updatedVideos
                 _allCloudVideos.value = updatedAll
                 _forcedOfflineVideoId.value = null
+                persistCurrentSettingsLocally()
                 localManager.savePlaylistVideos(updatedAll)
                 appendLog(
                     LogLevel.INFO,
@@ -1115,6 +1187,7 @@ class SignageViewModel(
         localManager.savePlaylistVideos(remainingAll)
         if (_forcedOfflineVideoId.value == video.id) {
             _forcedOfflineVideoId.value = null
+            persistCurrentSettingsLocally()
         }
         viewModelScope.launch {
             vercelClient.deleteVideoOnWebCms(_cmsServerUrl.value, video.id)

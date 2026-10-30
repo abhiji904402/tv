@@ -47,6 +47,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Backspace
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.AccessibilityNew
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.CloudDone
@@ -59,6 +60,7 @@ import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RotateLeft
 import androidx.compose.material.icons.filled.RotateRight
@@ -131,6 +133,7 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.source.ConcatenatingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -158,6 +161,9 @@ import com.example.ui.theme.WatchdogAmber
 import com.example.ui.viewmodel.ChunkTransferTelemetry
 import com.example.ui.viewmodel.SignageViewModel
 import kotlinx.coroutines.delay
+
+private val globalExoPlayerLock = Any()
+private var activeSingletonExoPlayer: ExoPlayer? = null
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -220,30 +226,123 @@ fun TvDisplayClientScreen(
         }
     }
 
+    val appContext = remember(context) { context.applicationContext }
+
     // Resilient DataSource with Chrome User-Agent and redirect support
-    val dataSourceFactory = remember(context) {
+    val dataSourceFactory = remember(appContext) {
         val httpFactory = DefaultHttpDataSource.Factory()
             .setUserAgent("Mozilla/5.0 (Linux; Android 13; SignageTV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
             .setConnectTimeoutMs(5000)
             .setReadTimeoutMs(5000)
             .setAllowCrossProtocolRedirects(true)
-        DefaultDataSource.Factory(context, httpFactory)
+        DefaultDataSource.Factory(appContext, httpFactory)
     }
 
-    // Media3 ExoPlayer configured with software decoder fallback & native gapless looping (REPEAT_MODE_ALL)
-    val exoPlayer = remember(context) {
-        val renderersFactory = DefaultRenderersFactory(context)
-            .setEnableDecoderFallback(true)
-        ExoPlayer.Builder(context, renderersFactory)
-            .setMediaSourceFactory(ProgressiveMediaSource.Factory(dataSourceFactory))
-            .build()
-            .apply {
-                repeatMode = Player.REPEAT_MODE_ALL
-                playWhenReady = true
+    // Media3 ExoPlayer configured with:
+    // 1) Synchronized single-instance guard so two ExoPlayers can NEVER coexist across recompositions or activity restarts.
+    // 2) Synchronous MediaCodec adapter (.forceDisableMediaCodecAsynchronousQueueing()) so codec release completes immediately.
+    // 3) Software-only MediaCodecSelector (c2.android.* / OMX.google.*) so emulator c2.goldfish hardware codecs are never allocated.
+    // 4) Exact video dimensions in CodecMaxValues (never 1920x1920) + KEY_PRIORITY = 0 (Realtime Foreground Priority) so ResourceManager never reclaims the codec.
+    val exoPlayer = remember(appContext) {
+        synchronized(globalExoPlayerLock) {
+            activeSingletonExoPlayer?.let { oldPlayer ->
+                try {
+                    oldPlayer.playWhenReady = false
+                    oldPlayer.stop()
+                    oldPlayer.clearMediaItems()
+                    oldPlayer.release()
+                } catch (_: Throwable) {
+                }
+                activeSingletonExoPlayer = null
             }
+
+            val softwareFirstCodecSelector = MediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
+                val defaultDecoders = MediaCodecSelector.DEFAULT.getDecoderInfos(
+                    mimeType,
+                    requiresSecureDecoder,
+                    requiresTunnelingDecoder
+                )
+                val softwareDecoders = defaultDecoders.filter { info ->
+                    info.softwareOnly ||
+                        info.name.startsWith("c2.android.", ignoreCase = true) ||
+                        info.name.startsWith("OMX.google.", ignoreCase = true)
+                }
+                softwareDecoders.ifEmpty { defaultDecoders }
+            }
+
+            val renderersFactory = object : DefaultRenderersFactory(appContext) {
+                override fun buildVideoRenderers(
+                    context: android.content.Context,
+                    extensionRendererMode: Int,
+                    mediaCodecSelector: MediaCodecSelector,
+                    enableDecoderFallback: Boolean,
+                    eventHandler: android.os.Handler,
+                    eventListener: androidx.media3.exoplayer.video.VideoRendererEventListener,
+                    allowedVideoJoiningTimeMs: Long,
+                    out: java.util.ArrayList<androidx.media3.exoplayer.Renderer>
+                ) {
+                    val videoRenderer = object : androidx.media3.exoplayer.video.MediaCodecVideoRenderer(
+                        context,
+                        codecAdapterFactory,
+                        mediaCodecSelector,
+                        allowedVideoJoiningTimeMs,
+                        enableDecoderFallback,
+                        eventHandler,
+                        eventListener,
+                        MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY
+                    ) {
+                        override fun getCodecMaxValues(
+                            codecInfo: androidx.media3.exoplayer.mediacodec.MediaCodecInfo,
+                            format: androidx.media3.common.Format,
+                            streamFormats: Array<androidx.media3.common.Format>
+                        ): CodecMaxValues {
+                            val exactWidth = if (format.width > 0) format.width else 1280
+                            val exactHeight = if (format.height > 0) format.height else 720
+                            val exactInputSize = if (format.maxInputSize > 0) format.maxInputSize else 0
+                            return CodecMaxValues(exactWidth, exactHeight, exactInputSize)
+                        }
+
+                        override fun getMediaFormat(
+                            format: androidx.media3.common.Format,
+                            codecMimeType: String,
+                            codecMaxValues: CodecMaxValues,
+                            codecOperatingRate: Float,
+                            deviceNeedsNoPostProcessWorkaround: Boolean,
+                            tunnelingAudioSessionId: Int
+                        ): android.media.MediaFormat {
+                            val mediaFormat = super.getMediaFormat(
+                                format,
+                                codecMimeType,
+                                codecMaxValues,
+                                androidx.media3.common.Format.NO_VALUE.toFloat(),
+                                deviceNeedsNoPostProcessWorkaround,
+                                tunnelingAudioSessionId
+                            )
+                            // KEY_PRIORITY = 0 is Realtime Priority (Highest Priority) in Android ResourceManagerService.
+                            // (KEY_PRIORITY = 1 is best-effort/lowest priority and causes ResourceManager reclamation!)
+                            mediaFormat.setInteger(android.media.MediaFormat.KEY_PRIORITY, 0)
+                            return mediaFormat
+                        }
+                    }
+                    out.add(videoRenderer)
+                }
+            }
+                .forceDisableMediaCodecAsynchronousQueueing()
+                .setMediaCodecSelector(softwareFirstCodecSelector)
+                .setEnableDecoderFallback(true)
+
+            ExoPlayer.Builder(appContext, renderersFactory)
+                .setMediaSourceFactory(ProgressiveMediaSource.Factory(dataSourceFactory))
+                .build()
+                .apply {
+                    repeatMode = Player.REPEAT_MODE_ALL
+                    playWhenReady = true
+                    activeSingletonExoPlayer = this
+                }
+        }
     }
 
-    // Automatically manage hardware MediaCodec across background/foreground transitions and ensure hands-free auto-play on resume
+    // Automatically manage MediaCodec across background/foreground transitions and ensure hands-free auto-play on resume
     DisposableEffect(lifecycleOwner, context, exoPlayer) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
@@ -255,8 +354,11 @@ fun TvDisplayClientScreen(
                     }
                     exoPlayer.play()
                 }
+                Lifecycle.Event.ON_PAUSE -> {
+                    exoPlayer.playWhenReady = false
+                }
                 Lifecycle.Event.ON_STOP -> {
-                    // Release hardware MediaCodec cleanly when app is backgrounded so Android ResourceManager never force-kills it
+                    // Release MediaCodec cleanly when app is backgrounded so Android ResourceManager never force-kills it
                     exoPlayer.playWhenReady = false
                     exoPlayer.stop()
                 }
@@ -278,6 +380,10 @@ fun TvDisplayClientScreen(
 
     LaunchedEffect(liveState.isMuted) {
         exoPlayer.volume = if (liveState.isMuted) 0f else 1f
+        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO, liveState.isMuted)
+            .build()
     }
 
     val effectiveVideos = remember(videos, allCloudVideos, forcedOfflineVideoId) {
@@ -446,17 +552,42 @@ fun TvDisplayClientScreen(
 
             override fun onPlayerError(error: PlaybackException) {
                 try {
+                    val isCodecOrResourceError =
+                        error.errorCode == PlaybackException.ERROR_CODE_DECODING_RESOURCES_RECLAIMED ||
+                            error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
+                            error.errorCode == PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED ||
+                            error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED ||
+                            error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES
+
+                    if (isCodecOrResourceError) {
+                        // Recover immediately in-place without deleting or re-downloading the valid local MP4 file
+                        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) &&
+                            exoPlayer.mediaItemCount > 0
+                        ) {
+                            exoPlayer.prepare()
+                            exoPlayer.playWhenReady = true
+                            exoPlayer.play()
+                        }
+                        return
+                    }
+
                     val failedMediaKey = exoPlayer.currentMediaItem?.mediaId
                     val activeVid = playableVideos.firstOrNull {
                         it.id == failedMediaKey ||
                             it.localFileName.trim().lowercase(java.util.Locale.US) == failedMediaKey
                     } ?: playableVideos.getOrNull(currentMediaIndex)
                     if (activeVid != null) {
-                        // Quarantine this video immediately so ExoPlayer never retries a malformed file in a loop
-                        quarantinedVideoIds = quarantinedVideoIds +
-                            activeVid.id +
-                            activeVid.localFileName.trim().lowercase(java.util.Locale.US)
-                        localManager.deleteCachedVideoFile(activeVid.localFileName)
+                        // Only quarantine and delete if the local file is actually corrupted on disk
+                        if (!localManager.isRealMp4PlayableOffline(activeVid.localFileName)) {
+                            quarantinedVideoIds = quarantinedVideoIds +
+                                activeVid.id +
+                                activeVid.localFileName.trim().lowercase(java.util.Locale.US)
+                            localManager.deleteCachedVideoFile(activeVid.localFileName)
+                        } else if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                            exoPlayer.prepare()
+                            exoPlayer.playWhenReady = true
+                            exoPlayer.play()
+                        }
                     }
                 } catch (_: Throwable) {
                 }
@@ -491,9 +622,20 @@ fun TvDisplayClientScreen(
         }
     }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(exoPlayer) {
         onDispose {
-            exoPlayer.release()
+            synchronized(globalExoPlayerLock) {
+                try {
+                    exoPlayer.playWhenReady = false
+                    exoPlayer.stop()
+                    exoPlayer.clearMediaItems()
+                    exoPlayer.release()
+                } catch (_: Throwable) {
+                }
+                if (activeSingletonExoPlayer === exoPlayer) {
+                    activeSingletonExoPlayer = null
+                }
+            }
         }
     }
 
@@ -506,6 +648,38 @@ fun TvDisplayClientScreen(
     val activePreviewTitle = playableVideos.getOrNull(currentMediaIndex)?.title
         ?: effectiveVideos.firstOrNull()?.title
         ?: "Standby"
+
+    val exitApplicationNow: () -> Unit = {
+        try {
+            viewModel.prepareForIntentionalAppExit()
+            exoPlayer.playWhenReady = false
+            exoPlayer.stop()
+            exoPlayer.clearMediaItems()
+        } catch (_: Throwable) {
+        }
+        try {
+            val pm = context.packageManager
+            val homeIntent = android.content.Intent(android.content.Intent.ACTION_MAIN).apply {
+                addCategory(android.content.Intent.CATEGORY_HOME)
+                flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            val otherHome = pm.queryIntentActivities(homeIntent, 0)
+                .firstOrNull { it.activityInfo?.packageName != null && it.activityInfo.packageName != context.packageName }
+            if (otherHome != null) {
+                homeIntent.setClassName(otherHome.activityInfo.packageName, otherHome.activityInfo.name)
+                context.startActivity(homeIntent)
+            }
+        } catch (_: Throwable) {
+        }
+        try {
+            (context as? Activity)?.let { act ->
+                act.moveTaskToBack(true)
+                act.finishAndRemoveTask()
+                act.finishAffinity()
+            }
+        } catch (_: Throwable) {
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -541,9 +715,12 @@ fun TvDisplayClientScreen(
                     liveState = liveState,
                     permissionsStatus = permissionsStatus,
                     lastSyncCycleCount = lastSyncCycleCount,
-                    onOpenAdminHubWithPin = { tabIdx -> viewModel.onGreenStarAdminClick(tabIdx) }
+                    onOpenAdminHubWithPin = { tabIdx -> viewModel.onGreenStarAdminClick(tabIdx) },
+                    onExitApp = exitApplicationNow
                 )
-            } else if (!isAdminPanelOpen) {
+            } else {
+                // Keep a SINGLE persistent TextureView surface mounted at all times while videos are playable
+                // so opening/closing the Admin Hub or switching tabs NEVER detaches or swaps MediaCodec's output surface!
                 RotatableTextureVideoPlayer(
                     exoPlayer = exoPlayer,
                     videoRotateDegrees = videoRotateDegrees,
@@ -664,17 +841,12 @@ fun TvDisplayClientScreen(
         }
 
         // 4. Full-Screen Admin Hub with Top Back Button, Live Video Preview & Bottom Navigation Bar
-        AnimatedVisibility(
-            visible = isAdminPanelOpen,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.fillMaxSize()
-        ) {
+        if (isAdminPanelOpen) {
             AdminFullScreenHub(
                 selectedTab = selectedSidebarTab,
                 onSelectTab = { viewModel.selectSidebarTab(it) },
                 exoPlayer = exoPlayer,
-                hasPlayableVideo = playableVideos.isNotEmpty(),
+                hasPlayableVideo = isAdminPanelOpen && playableVideos.isNotEmpty(),
                 activePreviewTitle = activePreviewTitle,
                 resizeMode = resizeMode,
                 permissionsStatus = permissionsStatus,
@@ -723,7 +895,8 @@ fun TvDisplayClientScreen(
                 onDeleteVideo = { viewModel.deleteVideoFromPlaylist(it) },
                 onManualOtaRollback = { viewModel.triggerManualOtaRollback() },
                 onClearLogs = { viewModel.clearDiagnosticLogs() },
-                onClose = { viewModel.closeAdminPanel() }
+                onClose = { viewModel.closeAdminPanel() },
+                onExitApp = exitApplicationNow
             )
         }
 
@@ -733,7 +906,8 @@ fun TvDisplayClientScreen(
                 pinError = pinError,
                 expectedPinLength = 4,
                 onVerifyPin = { entered -> viewModel.verifyAdminPin(entered) },
-                onDismiss = { viewModel.dismissAdminPinPrompt() }
+                onDismiss = { viewModel.dismissAdminPinPrompt() },
+                onExitApp = exitApplicationNow
             )
         }
     }
@@ -749,7 +923,8 @@ private fun StandbyPairingBroadcastCanvas(
     liveState: LiveState,
     permissionsStatus: KioskPermissionsStatus,
     lastSyncCycleCount: Long,
-    onOpenAdminHubWithPin: (Int) -> Unit
+    onOpenAdminHubWithPin: (Int) -> Unit,
+    onExitApp: () -> Unit
 ) {
     Box(
         modifier = Modifier
@@ -922,6 +1097,29 @@ private fun StandbyPairingBroadcastCanvas(
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Unlock Admin Settings (PIN: 1234)", fontWeight = FontWeight.Bold, maxLines = 1)
                 }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                OutlinedButton(
+                    onClick = onExitApp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp)
+                        .testTag("standby_exit_app_button"),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = AlertCrimson
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PowerSettingsNew,
+                        contentDescription = "Exit Application",
+                        tint = AlertCrimson,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Exit Application", fontWeight = FontWeight.Bold, color = AlertCrimson, maxLines = 1)
+                }
             }
         }
     }
@@ -952,7 +1150,8 @@ private fun BuiltInKeypadPasswordDialog(
     pinError: String?,
     expectedPinLength: Int = 4,
     onVerifyPin: (String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onExitApp: () -> Unit
 ) {
     var enteredPin by remember { mutableStateOf("") }
 
@@ -1195,6 +1394,30 @@ private fun BuiltInKeypadPasswordDialog(
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Unlock Admin Settings", fontWeight = FontWeight.Bold)
                 }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Button(
+                    onClick = onExitApp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp)
+                        .testTag("pin_dialog_exit_app_button"),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = AlertCrimson.copy(alpha = 0.2f),
+                        contentColor = AlertCrimson
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PowerSettingsNew,
+                        contentDescription = "Exit Application",
+                        tint = AlertCrimson,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Exit Application", fontWeight = FontWeight.Bold, color = AlertCrimson)
+                }
             }
         }
     }
@@ -1266,20 +1489,51 @@ private fun InlineLiveVideoPreviewCard(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(175.dp)
+                    .height(155.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(ObsidianBackground)
-                    .border(1.dp, BorderSlate, RoundedCornerShape(12.dp)),
+                    .background(ObsidianBackground.copy(alpha = 0.55f))
+                    .border(1.dp, BorderSlate, RoundedCornerShape(12.dp))
+                    .testTag("admin_inline_video_preview"),
                 contentAlignment = Alignment.Center
             ) {
                 if (hasPlayableVideo) {
-                    RotatableTextureVideoPlayer(
-                        exoPlayer = exoPlayer,
-                        videoRotateDegrees = videoRotateDegrees,
-                        scaleMode = scaleMode,
-                        useController = true,
-                        testTag = "admin_inline_video_preview"
-                    )
+                    val normDeg = ((videoRotateDegrees % 360) + 360) % 360
+                    val isPortraitFrame = normDeg == 90 || normDeg == 270
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier.padding(12.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(
+                                    width = if (isPortraitFrame) 58.dp else 98.dp,
+                                    height = if (isPortraitFrame) 92.dp else 56.dp
+                                )
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(ElectricCyan.copy(alpha = 0.14f))
+                                .border(1.5.dp, SignalGreen, RoundedCornerShape(8.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "${normDeg}°\n$scaleMode",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = SignalGreen,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "▶ Playing Live in Background: $activePreviewTitle • Tap 'Full Screen TV' to view",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = SignalGreen,
+                            fontWeight = FontWeight.SemiBold,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 } else {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1379,7 +1633,9 @@ private fun RotatableTextureVideoPlayer(
                 }
             },
             onRelease = { playerView ->
-                playerView.player = null
+                if (playerView.player === exoPlayer) {
+                    playerView.player = null
+                }
             },
             modifier = Modifier
                 .requiredSize(width = targetWidth, height = targetHeight)
@@ -1441,7 +1697,8 @@ private fun AdminFullScreenHub(
     onDeleteVideo: (PlaylistVideo) -> Unit,
     onManualOtaRollback: () -> Unit,
     onClearLogs: () -> Unit,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    onExitApp: () -> Unit
 ) {
     val combinedVideos = remember(videos, allCloudVideos) {
         (allCloudVideos + videos).distinctBy { it.id }
@@ -1456,7 +1713,7 @@ private fun AdminFullScreenHub(
     )
 
     Scaffold(
-        containerColor = ObsidianBackground,
+        containerColor = ObsidianBackground.copy(alpha = 0.88f),
         contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             Surface(
@@ -1538,21 +1795,46 @@ private fun AdminFullScreenHub(
                         }
                     }
 
-                    // Quick Save Button on Top Right
-                    Button(
-                        onClick = onSaveSettings,
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = SignalGreen,
-                            contentColor = ObsidianBackground
-                        ),
-                        modifier = Modifier
-                            .height(38.dp)
-                            .testTag("admin_top_save_button")
+                    // Quick Save & Exit App Buttons on Top Right
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(imageVector = Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Save", fontWeight = FontWeight.Bold, maxLines = 1)
+                        Button(
+                            onClick = onSaveSettings,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = SignalGreen,
+                                contentColor = ObsidianBackground
+                            ),
+                            modifier = Modifier
+                                .height(38.dp)
+                                .testTag("admin_top_save_button")
+                        ) {
+                            Icon(imageVector = Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Save", fontWeight = FontWeight.Bold, maxLines = 1)
+                        }
+
+                        Button(
+                            onClick = onExitApp,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = AlertCrimson,
+                                contentColor = Color.White
+                            ),
+                            modifier = Modifier
+                                .height(38.dp)
+                                .testTag("admin_top_exit_app_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ExitToApp,
+                                contentDescription = "Exit Application",
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Exit", fontWeight = FontWeight.Bold, maxLines = 1)
+                        }
                     }
                 }
             }
@@ -1627,7 +1909,8 @@ private fun AdminFullScreenHub(
                         onToggleMute = onToggleMute,
                         onToggleKioskLock = onToggleKioskLock,
                         onSaveSettings = onSaveSettings,
-                        onOpenFullScreen = onClose
+                        onOpenFullScreen = onClose,
+                        onExitApp = onExitApp
                     )
                     1 -> AdminPairingAndSyncPage(
                         cmsServerUrl = cmsServerUrl,
@@ -1698,7 +1981,8 @@ private fun AdminOrientationAndRotatePage(
     onToggleMute: (Boolean) -> Unit,
     onToggleKioskLock: (Boolean) -> Unit,
     onSaveSettings: () -> Unit,
-    onOpenFullScreen: () -> Unit
+    onOpenFullScreen: () -> Unit,
+    onExitApp: () -> Unit
 ) {
     val rotationAngles = listOf(0, 90, 180, 270)
     val scaleOptions = listOf(
@@ -1958,6 +2242,27 @@ private fun AdminOrientationAndRotatePage(
             Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = "Save Settings ($screenOrientation • ${videoRotateDegrees}° • ${liveState.scaleMode})",
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
+        }
+
+        Button(
+            onClick = onExitApp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp)
+                .testTag("admin_rotate_page_exit_app_button"),
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = AlertCrimson,
+                contentColor = Color.White
+            )
+        ) {
+            Icon(imageVector = Icons.Default.PowerSettingsNew, contentDescription = "Exit Application")
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "Exit Application (Close App)",
                 fontWeight = FontWeight.Bold,
                 maxLines = 1
             )

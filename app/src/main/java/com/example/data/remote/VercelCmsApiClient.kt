@@ -75,6 +75,8 @@ class VercelCmsApiClient {
         currentVideoRotateDegrees: Int,
         currentScaleMode: String,
         currentIsMuted: Boolean,
+        currentKioskLocked: Boolean = false,
+        currentAssignedVideoId: String = "ALL",
         settingsUpdatedAtMs: Long,
         currentVideoTitle: String,
         cachedVideoCount: Long,
@@ -128,6 +130,8 @@ class VercelCmsApiClient {
                 put("videoRotateDegrees", currentVideoRotateDegrees)
                 put("scaleMode", currentScaleMode)
                 put("isMuted", currentIsMuted)
+                put("kioskLocked", currentKioskLocked)
+                put("assignedVideoId", currentAssignedVideoId)
                 put("settingsUpdatedAtMs", settingsUpdatedAtMs)
                 put("currentVideoTitle", currentVideoTitle)
                 put("cachedVideoCount", cachedVideoCount)
@@ -148,6 +152,7 @@ class VercelCmsApiClient {
                 .post(bodyJson.toString().toRequestBody(jsonMediaType))
                 .build()
 
+            var usedStateFallback = false
             val responseBodyString = httpClient.newCall(heartbeatReq).execute().use { response ->
                 if (response.isSuccessful) {
                     response.body?.string().orEmpty()
@@ -155,6 +160,7 @@ class VercelCmsApiClient {
                     null
                 }
             } ?: run {
+                usedStateFallback = true
                 val fallbackReq = Request.Builder()
                     .url("$cleanBase/api/state?t=${System.currentTimeMillis()}")
                     .header("Cache-Control", "no-cache, no-store")
@@ -181,47 +187,68 @@ class VercelCmsApiClient {
                 ?: root
             val deviceObj = root.optJSONObject("device") ?: JSONObject()
 
-            val effectiveOrientation = deviceObj.optString(
-                "orientation",
-                lsObj.optString("orientation", lsObj.optString("rotation", currentOrientation))
-            ).ifBlank { currentOrientation }
-
-            val remoteVideoRotateDegrees: Int? = when {
-                deviceObj.has("videoRotateDegrees") -> deviceObj.optInt("videoRotateDegrees", currentVideoRotateDegrees)
-                lsObj.has("videoRotateDegrees") -> lsObj.optInt("videoRotateDegrees", currentVideoRotateDegrees)
-                else -> null
-            }
-
-            val remoteSettingsUpdatedAtMs = maxOf(
-                deviceObj.optLong("settingsUpdatedAtMs", 0L),
-                lsObj.optLong("settingsUpdatedAtMs", 0L)
-            )
-
-            val effectiveScaleMode = deviceObj.optString(
-                "scaleMode",
-                lsObj.optString("scaleMode", currentScaleMode)
-            ).ifBlank { currentScaleMode }
-
-            val effectiveMuted = when {
-                deviceObj.has("isMuted") -> deviceObj.optBoolean("isMuted", currentIsMuted)
-                lsObj.has("isMuted") -> lsObj.optBoolean("isMuted", currentIsMuted)
-                lsObj.has("muted") -> lsObj.optBoolean("muted", currentIsMuted)
-                else -> currentIsMuted
-            }
-
-            val isPaired = true
-
             val effectivePushCmd = deviceObj.optString(
                 "lastPushCommand",
                 lsObj.optString("lastPushCommand", "SYNC_OK")
             )
+
+            // Only trust device-specific settingsUpdatedAtMs (or global state timestamp if an explicit GLOBAL_STATE command was sent).
+            // Never allow a fallback /api/state response or a cold-started server with timestamp 0 to overwrite this device's settings!
+            val deviceSettingsUpdatedAtMs = deviceObj.optLong("settingsUpdatedAtMs", 0L)
+            val remoteSettingsUpdatedAtMs = when {
+                usedStateFallback -> 0L
+                effectivePushCmd.startsWith("GLOBAL_STATE") -> maxOf(
+                    deviceSettingsUpdatedAtMs,
+                    lsObj.optLong("settingsUpdatedAtMs", 0L)
+                )
+                else -> deviceSettingsUpdatedAtMs
+            }
+
+            val effectiveOrientation = if (!usedStateFallback && deviceObj.has("orientation")) {
+                deviceObj.optString("orientation", currentOrientation).ifBlank { currentOrientation }
+            } else if (effectivePushCmd.startsWith("GLOBAL_STATE")) {
+                lsObj.optString("orientation", lsObj.optString("rotation", currentOrientation)).ifBlank { currentOrientation }
+            } else {
+                currentOrientation
+            }
+
+            val remoteVideoRotateDegrees: Int? = when {
+                !usedStateFallback && deviceObj.has("videoRotateDegrees") ->
+                    deviceObj.optInt("videoRotateDegrees", currentVideoRotateDegrees)
+                effectivePushCmd.startsWith("GLOBAL_STATE") && lsObj.has("videoRotateDegrees") ->
+                    lsObj.optInt("videoRotateDegrees", currentVideoRotateDegrees)
+                else -> null
+            }
+
+            val effectiveScaleMode = if (!usedStateFallback && deviceObj.has("scaleMode")) {
+                deviceObj.optString("scaleMode", currentScaleMode).ifBlank { currentScaleMode }
+            } else if (effectivePushCmd.startsWith("GLOBAL_STATE")) {
+                lsObj.optString("scaleMode", currentScaleMode).ifBlank { currentScaleMode }
+            } else {
+                currentScaleMode
+            }
+
+            val effectiveMuted = when {
+                !usedStateFallback && deviceObj.has("isMuted") -> deviceObj.optBoolean("isMuted", currentIsMuted)
+                effectivePushCmd.startsWith("GLOBAL_STATE") && lsObj.has("isMuted") -> lsObj.optBoolean("isMuted", currentIsMuted)
+                effectivePushCmd.startsWith("GLOBAL_STATE") && lsObj.has("muted") -> lsObj.optBoolean("muted", currentIsMuted)
+                else -> currentIsMuted
+            }
+
+            val effectiveKioskLocked = when {
+                !usedStateFallback && deviceObj.has("kioskLocked") -> deviceObj.optBoolean("kioskLocked", currentKioskLocked)
+                effectivePushCmd.startsWith("GLOBAL_STATE") && lsObj.has("kioskLocked") -> lsObj.optBoolean("kioskLocked", currentKioskLocked)
+                else -> currentKioskLocked
+            }
+
+            val isPaired = true
 
             val liveState = LiveState(
                 userId = "vercel_web_cms",
                 orientation = effectiveOrientation,
                 scaleMode = effectiveScaleMode,
                 isMuted = effectiveMuted,
-                kioskLocked = lsObj.optBoolean("kioskLocked", false),
+                kioskLocked = effectiveKioskLocked,
                 adminPin = lsObj.optString("adminPin", "1234").ifBlank { "1234" },
                 activeZoneId = deviceObj.optString("zoneId", lsObj.optString("activeZoneId", "zone_lobby")),
                 lastPushCommand = effectivePushCmd,
@@ -318,6 +345,12 @@ class VercelCmsApiClient {
                 )
             }
 
+            val effectiveAssignedVideoId = if (!usedStateFallback && deviceObj.has("assignedVideoId") && deviceSettingsUpdatedAtMs > 0L) {
+                deviceObj.optString("assignedVideoId", currentAssignedVideoId).ifBlank { currentAssignedVideoId }
+            } else {
+                currentAssignedVideoId
+            }
+
             Result.success(
                 RemoteHeartbeatSyncPayload(
                     liveState = liveState,
@@ -328,8 +361,12 @@ class VercelCmsApiClient {
                     deletedVideoIds = remoteDeletedSet,
                     missingServerVideoIds = missingServerSet,
                     otaReleases = parsedReleases,
-                    assignedVideoId = deviceObj.optString("assignedVideoId", "ALL").ifBlank { "ALL" },
-                    deviceName = deviceObj.optString("deviceName", deviceName).ifBlank { deviceName },
+                    assignedVideoId = effectiveAssignedVideoId,
+                    deviceName = if (!usedStateFallback && deviceSettingsUpdatedAtMs > 0L) {
+                        deviceObj.optString("deviceName", deviceName).ifBlank { deviceName }
+                    } else {
+                        deviceName
+                    },
                     isPairedWithCms = isPaired
                 )
             )
@@ -350,6 +387,8 @@ class VercelCmsApiClient {
         videoRotateDegrees: Int,
         scaleMode: String,
         isMuted: Boolean,
+        kioskLocked: Boolean = false,
+        assignedVideoId: String = "ALL",
         currentVideoTitle: String = "Playing",
         settingsUpdatedAtMs: Long = System.currentTimeMillis()
     ): Result<Unit> = withContext(Dispatchers.IO) {
@@ -368,6 +407,8 @@ class VercelCmsApiClient {
                 put("videoRotateDegrees", videoRotateDegrees)
                 put("scaleMode", scaleMode)
                 put("isMuted", isMuted)
+                put("kioskLocked", kioskLocked)
+                put("assignedVideoId", assignedVideoId)
                 put("settingsUpdatedAtMs", settingsUpdatedAtMs)
             }
             val request = Request.Builder()

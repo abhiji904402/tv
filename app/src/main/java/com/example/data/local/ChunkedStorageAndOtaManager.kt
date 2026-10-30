@@ -43,11 +43,13 @@ data class SavedDisplaySettings(
     val screenOrientation: String = "LANDSCAPE", // LANDSCAPE or PORTRAIT
     val videoRotateDegrees: Int = 0,             // 0, 90, 180, 270
     val combinedOrientation: String = "LANDSCAPE", // LANDSCAPE, PORTRAIT, ROTATE_90, ROTATE_180, ROTATE_270
-    val scaleMode: String = "FILL",              // FILL, FIT, ZOOM
+    val scaleMode: String = "FILL",              // FILL, FIT, ZOOM (Screen Ratio)
     val isMuted: Boolean = false,
     val kioskLocked: Boolean = false,
+    val assignedVideoId: String = "ALL",
+    val forcedOfflineVideoId: String? = null,
     val syncIntervalSeconds: Int = 2,            // 2s real-time sync when online
-    val hasLocalOverrideSaved: Boolean = false,
+    val hasLocalOverrideSaved: Boolean = true,
     val settingsUpdatedAtMs: Long = 0L           // Monotonic timestamp so old server instances never flip orientation
 )
 
@@ -68,6 +70,7 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
         const val CHUNK_SIZE_BYTES = 600 * 1024 // 600KB chunks
         const val DEFAULT_CMS_SERVER_URL = "https://tv-br.vercel.app"
         private const val PREFS_NAME = "pulsecast_ota_and_device_prefs"
+        private const val LOCKED_SETTINGS_FILE_NAME = "locked_device_settings.json"
         private val verifiedMediaCache = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
     }
 
@@ -84,7 +87,28 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
         }
     }
 
+    private val deviceProtectedContext: Context? = try {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+            (context.applicationContext ?: context).createDeviceProtectedStorageContext()
+        } else {
+            null
+        }
+    } catch (_: Throwable) {
+        null
+    }
+
     private val prefs = safeContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val deviceProtectedPrefs = try {
+        deviceProtectedContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    } catch (_: Throwable) {
+        null
+    }
+
+    private val lockedSettingsFile: File
+        get() = File(safeContext.filesDir, LOCKED_SETTINGS_FILE_NAME)
+
+    private val deviceProtectedSettingsFile: File?
+        get() = deviceProtectedContext?.filesDir?.let { File(it, LOCKED_SETTINGS_FILE_NAME) }
 
     val videosDir: File
         get() = File(safeContext.filesDir, "videos").apply {
@@ -138,7 +162,7 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
                         f.delete()
                     }
                 }
-                prefs.edit().putBoolean("purged_legacy_demo_cache_v4", true).apply()
+                prefs.edit().putBoolean("purged_legacy_demo_cache_v4", true).commit()
             }
             // Strip any demo video entries OR unverified ghost/corrupt entries without a valid local file from saved playlist JSON
             val raw = prefs.getString("saved_playlist_videos_json", null)
@@ -166,7 +190,7 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
                     }
                 }
                 if (modified) {
-                    prefs.edit().putString("saved_playlist_videos_json", cleanArr.toString()).apply()
+                    prefs.edit().putString("saved_playlist_videos_json", cleanArr.toString()).commit()
                 }
             }
         } catch (_: Throwable) {
@@ -190,29 +214,43 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
 
     fun getCmsServerUrl(): String {
         val saved = prefs.getString("cms_server_url", null)?.trim()?.trimEnd('/')
+            ?: deviceProtectedPrefs?.getString("cms_server_url", null)?.trim()?.trimEnd('/')
         return if (!saved.isNullOrBlank()) saved else DEFAULT_CMS_SERVER_URL
     }
 
     fun setCmsServerUrl(url: String): String {
         val cleaned = url.trim().trimEnd('/').ifBlank { DEFAULT_CMS_SERVER_URL }
-        prefs.edit().putString("cms_server_url", cleaned).apply()
+        prefs.edit().putString("cms_server_url", cleaned).commit()
+        deviceProtectedPrefs?.edit()?.putString("cms_server_url", cleaned)?.commit()
         return cleaned
     }
 
     fun getOrCreateDeviceId(): String {
         val existing = prefs.getString("device_id", null)
-        if (!existing.isNullOrBlank()) return existing
+            ?: deviceProtectedPrefs?.getString("device_id", null)
+        if (!existing.isNullOrBlank()) {
+            prefs.edit().putString("device_id", existing).commit()
+            deviceProtectedPrefs?.edit()?.putString("device_id", existing)?.commit()
+            return existing
+        }
         val code = getOrCreatePairingCode()
         val generated = "tv_$code"
-        prefs.edit().putString("device_id", generated).apply()
+        prefs.edit().putString("device_id", generated).commit()
+        deviceProtectedPrefs?.edit()?.putString("device_id", generated)?.commit()
         return generated
     }
 
     fun getOrCreatePairingCode(): String {
         val existing = prefs.getString("pairing_code", null)
-        if (!existing.isNullOrBlank() && existing.length == 6) return existing
+            ?: deviceProtectedPrefs?.getString("pairing_code", null)
+        if (!existing.isNullOrBlank() && existing.length == 6) {
+            prefs.edit().putString("pairing_code", existing).commit()
+            deviceProtectedPrefs?.edit()?.putString("pairing_code", existing)?.commit()
+            return existing
+        }
         val generated = (100000..999999).random().toString()
-        prefs.edit().putString("pairing_code", generated).apply()
+        prefs.edit().putString("pairing_code", generated).commit()
+        deviceProtectedPrefs?.edit()?.putString("pairing_code", generated)?.commit()
         return generated
     }
 
@@ -222,7 +260,12 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
             .putString("pairing_code", digits)
             .putString("device_id", "tv_$digits")
             .putBoolean("is_permanently_paired", true)
-            .apply()
+            .commit()
+        deviceProtectedPrefs?.edit()
+            ?.putString("pairing_code", digits)
+            ?.putString("device_id", "tv_$digits")
+            ?.putBoolean("is_permanently_paired", true)
+            ?.commit()
         return digits
     }
 
@@ -231,21 +274,29 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
     }
 
     fun setDevicePermanentlyPaired(paired: Boolean) {
-        prefs.edit().putBoolean("is_permanently_paired", paired).apply()
+        prefs.edit().putBoolean("is_permanently_paired", paired).commit()
+        deviceProtectedPrefs?.edit()?.putBoolean("is_permanently_paired", paired)?.commit()
     }
 
     fun getOrCreateDeviceName(): String {
         val existing = prefs.getString("device_name", null)
-        if (!existing.isNullOrBlank()) return existing
+            ?: deviceProtectedPrefs?.getString("device_name", null)
+        if (!existing.isNullOrBlank()) {
+            prefs.edit().putString("device_name", existing).commit()
+            deviceProtectedPrefs?.edit()?.putString("device_name", existing)?.commit()
+            return existing
+        }
         val code = getOrCreatePairingCode()
         val generated = "Android TV #$code"
-        prefs.edit().putString("device_name", generated).apply()
+        prefs.edit().putString("device_name", generated).commit()
+        deviceProtectedPrefs?.edit()?.putString("device_name", generated)?.commit()
         return generated
     }
 
     fun setDeviceName(name: String): String {
         val cleaned = name.trim().ifBlank { "Android TV #${getOrCreatePairingCode()}" }
-        prefs.edit().putString("device_name", cleaned).apply()
+        prefs.edit().putString("device_name", cleaned).commit()
+        deviceProtectedPrefs?.edit()?.putString("device_name", cleaned)?.commit()
         return cleaned
     }
 
@@ -255,24 +306,49 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
             .putString("pairing_code", generated)
             .putString("device_id", "tv_$generated")
             .putBoolean("is_permanently_paired", true)
-            .apply()
+            .commit()
+        deviceProtectedPrefs?.edit()
+            ?.putString("pairing_code", generated)
+            ?.putString("device_id", "tv_$generated")
+            ?.putBoolean("is_permanently_paired", true)
+            ?.commit()
         return generated
+    }
+
+    fun setTemporaryExitBypass(active: Boolean) {
+        prefs.edit().putBoolean("temporary_exit_bypass", active).commit()
+        deviceProtectedPrefs?.edit()?.putBoolean("temporary_exit_bypass", active)?.commit()
+    }
+
+    fun isTemporaryExitBypassActive(): Boolean {
+        return prefs.getBoolean("temporary_exit_bypass", false) ||
+            (deviceProtectedPrefs?.getBoolean("temporary_exit_bypass", false) == true)
     }
 
     // ------------------------------------------------------------------------
     // Persistent Display, Orientation & Video Rotate Settings ("Save Settings")
+    // Triple-stored synchronously (Credential Prefs + Device-Protected Prefs + Disk JSON)
+    // so settings NEVER reset on restart, power cut, Direct Boot, or offline mode!
     // ------------------------------------------------------------------------
 
-    fun getSavedDisplaySettings(): SavedDisplaySettings {
-        val screenOrient = prefs.getString("saved_screen_orientation", "LANDSCAPE") ?: "LANDSCAPE"
-        val rotateDeg = prefs.getInt("saved_video_rotate_deg", 0)
-        val combined = prefs.getString("saved_combined_orientation", "LANDSCAPE") ?: "LANDSCAPE"
-        val scale = prefs.getString("saved_scale_mode", "FILL") ?: "FILL"
-        val muted = prefs.getBoolean("saved_is_muted", false)
-        val kiosk = prefs.getBoolean("saved_kiosk_locked", false)
-        val syncSec = prefs.getInt("saved_sync_interval_sec", 2).coerceIn(2, 5)
-        val hasLocalOverride = prefs.getBoolean("saved_has_local_override", false)
-        val updatedAtMs = prefs.getLong("saved_settings_updated_at_ms", 0L)
+    private fun readSettingsFromPrefs(sp: android.content.SharedPreferences?): SavedDisplaySettings? {
+        if (sp == null) return null
+        val hasAnyKey = sp.contains("saved_screen_orientation") ||
+            sp.contains("saved_scale_mode") ||
+            sp.contains("saved_video_rotate_deg") ||
+            sp.contains("saved_settings_updated_at_ms")
+        if (!hasAnyKey) return null
+        val screenOrient = sp.getString("saved_screen_orientation", "LANDSCAPE") ?: "LANDSCAPE"
+        val rotateDeg = sp.getInt("saved_video_rotate_deg", 0)
+        val combined = sp.getString("saved_combined_orientation", "LANDSCAPE") ?: "LANDSCAPE"
+        val scale = sp.getString("saved_scale_mode", "FILL") ?: "FILL"
+        val muted = sp.getBoolean("saved_is_muted", false)
+        val kiosk = sp.getBoolean("saved_kiosk_locked", false)
+        val assignedVid = sp.getString("saved_assigned_video_id", "ALL")?.ifBlank { "ALL" } ?: "ALL"
+        val forcedOfflineVid = sp.getString("saved_forced_offline_video_id", null)?.takeIf { it.isNotBlank() }
+        val syncSec = sp.getInt("saved_sync_interval_sec", 2).coerceIn(2, 5)
+        val hasLocalOverride = sp.getBoolean("saved_has_local_override", true)
+        val updatedAtMs = sp.getLong("saved_settings_updated_at_ms", 0L)
         return SavedDisplaySettings(
             screenOrientation = screenOrient,
             videoRotateDegrees = rotateDeg,
@@ -280,24 +356,111 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
             scaleMode = scale,
             isMuted = muted,
             kioskLocked = kiosk,
+            assignedVideoId = assignedVid,
+            forcedOfflineVideoId = forcedOfflineVid,
             syncIntervalSeconds = syncSec,
             hasLocalOverrideSaved = hasLocalOverride,
             settingsUpdatedAtMs = updatedAtMs
         )
     }
 
+    private fun readSettingsFromJsonFile(file: File?): SavedDisplaySettings? {
+        if (file == null || !file.exists() || file.length() <= 2L) return null
+        return try {
+            val raw = file.readText()
+            val obj = JSONObject(raw)
+            SavedDisplaySettings(
+                screenOrientation = obj.optString("screenOrientation", "LANDSCAPE").ifBlank { "LANDSCAPE" },
+                videoRotateDegrees = obj.optInt("videoRotateDegrees", 0),
+                combinedOrientation = obj.optString("combinedOrientation", "LANDSCAPE").ifBlank { "LANDSCAPE" },
+                scaleMode = obj.optString("scaleMode", "FILL").ifBlank { "FILL" },
+                isMuted = obj.optBoolean("isMuted", false),
+                kioskLocked = obj.optBoolean("kioskLocked", false),
+                assignedVideoId = obj.optString("assignedVideoId", "ALL").ifBlank { "ALL" },
+                forcedOfflineVideoId = obj.optString("forcedOfflineVideoId", "").takeIf { it.isNotBlank() },
+                syncIntervalSeconds = obj.optInt("syncIntervalSeconds", 2).coerceIn(2, 5),
+                hasLocalOverrideSaved = obj.optBoolean("hasLocalOverrideSaved", true),
+                settingsUpdatedAtMs = obj.optLong("settingsUpdatedAtMs", 0L)
+            )
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun writeSettingsToJsonFile(file: File?, settings: SavedDisplaySettings) {
+        if (file == null) return
+        try {
+            file.parentFile?.mkdirs()
+            val obj = JSONObject().apply {
+                put("screenOrientation", settings.screenOrientation)
+                put("videoRotateDegrees", settings.videoRotateDegrees)
+                put("combinedOrientation", settings.combinedOrientation)
+                put("scaleMode", settings.scaleMode)
+                put("isMuted", settings.isMuted)
+                put("kioskLocked", settings.kioskLocked)
+                put("assignedVideoId", settings.assignedVideoId)
+                put("forcedOfflineVideoId", settings.forcedOfflineVideoId ?: "")
+                put("syncIntervalSeconds", settings.syncIntervalSeconds.coerceIn(2, 5))
+                put("hasLocalOverrideSaved", settings.hasLocalOverrideSaved)
+                put("settingsUpdatedAtMs", settings.settingsUpdatedAtMs)
+            }
+            val bytes = obj.toString().toByteArray(Charsets.UTF_8)
+            FileOutputStream(file).use { fos ->
+                fos.write(bytes)
+                fos.flush()
+                try {
+                    fos.fd.sync()
+                } catch (_: Throwable) {
+                }
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    fun getSavedDisplaySettings(): SavedDisplaySettings {
+        val candidates = listOfNotNull(
+            readSettingsFromPrefs(prefs),
+            readSettingsFromPrefs(deviceProtectedPrefs),
+            readSettingsFromJsonFile(lockedSettingsFile),
+            readSettingsFromJsonFile(deviceProtectedSettingsFile)
+        )
+        val best = candidates.maxByOrNull { it.settingsUpdatedAtMs } ?: SavedDisplaySettings()
+        if (candidates.isNotEmpty()) {
+            // Ensure all storage mirrors stay in sync with the most recent locked settings
+            saveDisplaySettingsToPrefsOnly(prefs, best)
+            saveDisplaySettingsToPrefsOnly(deviceProtectedPrefs, best)
+        }
+        return best
+    }
+
+    private fun saveDisplaySettingsToPrefsOnly(
+        sp: android.content.SharedPreferences?,
+        settings: SavedDisplaySettings
+    ) {
+        if (sp == null) return
+        try {
+            sp.edit()
+                .putString("saved_screen_orientation", settings.screenOrientation)
+                .putInt("saved_video_rotate_deg", settings.videoRotateDegrees)
+                .putString("saved_combined_orientation", settings.combinedOrientation)
+                .putString("saved_scale_mode", settings.scaleMode)
+                .putBoolean("saved_is_muted", settings.isMuted)
+                .putBoolean("saved_kiosk_locked", settings.kioskLocked)
+                .putString("saved_assigned_video_id", settings.assignedVideoId.ifBlank { "ALL" })
+                .putString("saved_forced_offline_video_id", settings.forcedOfflineVideoId ?: "")
+                .putInt("saved_sync_interval_sec", settings.syncIntervalSeconds.coerceIn(2, 5))
+                .putBoolean("saved_has_local_override", settings.hasLocalOverrideSaved)
+                .putLong("saved_settings_updated_at_ms", settings.settingsUpdatedAtMs)
+                .commit()
+        } catch (_: Throwable) {
+        }
+    }
+
     fun saveDisplaySettings(settings: SavedDisplaySettings) {
-        prefs.edit()
-            .putString("saved_screen_orientation", settings.screenOrientation)
-            .putInt("saved_video_rotate_deg", settings.videoRotateDegrees)
-            .putString("saved_combined_orientation", settings.combinedOrientation)
-            .putString("saved_scale_mode", settings.scaleMode)
-            .putBoolean("saved_is_muted", settings.isMuted)
-            .putBoolean("saved_kiosk_locked", settings.kioskLocked)
-            .putInt("saved_sync_interval_sec", settings.syncIntervalSeconds.coerceIn(2, 5))
-            .putBoolean("saved_has_local_override", settings.hasLocalOverrideSaved)
-            .putLong("saved_settings_updated_at_ms", settings.settingsUpdatedAtMs)
-            .apply()
+        saveDisplaySettingsToPrefsOnly(prefs, settings)
+        saveDisplaySettingsToPrefsOnly(deviceProtectedPrefs, settings)
+        writeSettingsToJsonFile(lockedSettingsFile, settings)
+        writeSettingsToJsonFile(deviceProtectedSettingsFile, settings)
     }
 
     // ------------------------------------------------------------------------
