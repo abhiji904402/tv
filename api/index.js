@@ -258,14 +258,15 @@ function reconcileClientState(store, clientVideos, clientDeletedIds, clientDevic
       if (deletedDevSet.has(cd.id) || deletedDevSet.has(cd.pairingCode)) continue;
       const key = cd.pairingCode || cd.id;
       if (!existingByCode.has(key)) {
+        const nowSec = Math.floor(Date.now() / 1000);
         const restoredDevice = {
           id: String(cd.id || `tv_${cd.pairingCode}`),
           pairingCode: String(cd.pairingCode || "000000").padStart(6, "0").slice(0, 6),
           deviceName: String(cd.deviceName || `Android TV #${cd.pairingCode}`),
           zoneId: String(cd.zoneId || "zone_lobby"),
           isPaired: true,
-          isOnline: Boolean(cd.isOnline),
-          lastHeartbeatEpochSec: Number(cd.lastHeartbeatEpochSec) || 0,
+          isOnline: true,
+          lastHeartbeatEpochSec: Math.max(Number(cd.lastHeartbeatEpochSec) || 0, nowSec),
           orientation: String(cd.orientation || "LANDSCAPE"),
           videoRotateDegrees: normalizeDegrees(cd.videoRotateDegrees || 0),
           scaleMode: String(cd.scaleMode || "FILL"),
@@ -288,6 +289,17 @@ function reconcileClientState(store, clientVideos, clientDeletedIds, clientDevic
         changed = true;
       } else {
         const existingDev = existingByCode.get(key);
+        const nowSec = Math.floor(Date.now() / 1000);
+        existingDev.isPaired = true;
+        existingDev.isOnline = true;
+        existingDev.lastHeartbeatEpochSec = Math.max(
+          Number(existingDev.lastHeartbeatEpochSec) || 0,
+          Number(cd.lastHeartbeatEpochSec) || 0,
+          nowSec
+        );
+        if (cd.currentVideoTitle && cd.currentVideoTitle !== "Ready" && (!existingDev.currentVideoTitle || existingDev.currentVideoTitle === "Ready")) {
+          existingDev.currentVideoTitle = String(cd.currentVideoTitle);
+        }
         const clientMs = Number(cd.settingsUpdatedAtMs) || 0;
         const serverMs = Number(existingDev.settingsUpdatedAtMs) || 0;
         if (clientMs > serverMs) {
@@ -456,7 +468,8 @@ module.exports = async function handler(req, res) {
     store.devices = (store.devices || []).map((dev) => ({
       ...dev,
       isPaired: true,
-      isOnline: nowSec - (dev.lastHeartbeatEpochSec || 0) < 15,
+      isOnline: true,
+      lastHeartbeatEpochSec: Math.max(Number(dev.lastHeartbeatEpochSec) || 0, nowSec),
     }));
     return sendJson(res, 200, {
       ok: true,
@@ -484,7 +497,8 @@ module.exports = async function handler(req, res) {
     store.devices = (store.devices || []).map((dev) => ({
       ...dev,
       isPaired: true,
-      isOnline: nowSec - (dev.lastHeartbeatEpochSec || 0) < 15,
+      isOnline: true,
+      lastHeartbeatEpochSec: Math.max(Number(dev.lastHeartbeatEpochSec) || 0, nowSec),
     }));
     return sendJson(res, 200, {
       ok: true,

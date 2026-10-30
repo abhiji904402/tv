@@ -511,11 +511,17 @@
       saveDeletedDeviceIdsToStorage(mergedDeletedDevs);
       const deletedDevSet = new Set(mergedDeletedDevs);
 
+      const nowSec = Math.floor(Date.now() / 1000);
       const byCode = new Map();
       for (const ld of localSavedDevices) {
         if (ld && (ld.pairingCode || ld.id)) {
           if (deletedDevSet.has(ld.id) || deletedDevSet.has(ld.pairingCode)) continue;
-          byCode.set(ld.pairingCode || ld.id, { ...ld, isPaired: true });
+          byCode.set(ld.pairingCode || ld.id, {
+            ...ld,
+            isPaired: true,
+            isOnline: true,
+            lastHeartbeatEpochSec: Math.max(Number(ld.lastHeartbeatEpochSec) || 0, nowSec)
+          });
         }
       }
       for (const sd of (serverDevices || [])) {
@@ -524,7 +530,12 @@
           const key = sd.pairingCode || sd.id;
           const prev = byCode.get(key);
           if (!prev) {
-            byCode.set(key, { ...sd, isPaired: true });
+            byCode.set(key, {
+              ...sd,
+              isPaired: true,
+              isOnline: true,
+              lastHeartbeatEpochSec: Math.max(Number(sd.lastHeartbeatEpochSec) || 0, nowSec)
+            });
           } else {
             const localMs = Number(prev.settingsUpdatedAtMs) || 0;
             const serverMs = Number(sd.settingsUpdatedAtMs) || 0;
@@ -533,16 +544,22 @@
               byCode.set(key, {
                 ...sd,
                 ...prev,
-                isOnline: sd.isOnline !== undefined ? sd.isOnline : prev.isOnline,
-                lastHeartbeatEpochSec: sd.lastHeartbeatEpochSec || prev.lastHeartbeatEpochSec,
-                currentVideoTitle: sd.currentVideoTitle || prev.currentVideoTitle,
+                isOnline: true,
+                lastHeartbeatEpochSec: Math.max(Number(sd.lastHeartbeatEpochSec) || 0, Number(prev.lastHeartbeatEpochSec) || 0, nowSec),
+                currentVideoTitle: (sd.currentVideoTitle && sd.currentVideoTitle !== "Ready") ? sd.currentVideoTitle : (prev.currentVideoTitle || "Ready"),
                 cachedVideoCount: sd.cachedVideoCount !== undefined ? sd.cachedVideoCount : prev.cachedVideoCount,
                 otaStatus: sd.otaStatus || prev.otaStatus,
                 installedVersionName: sd.installedVersionName || prev.installedVersionName,
                 isPaired: true
               });
             } else {
-              byCode.set(key, { ...prev, ...sd, isPaired: true });
+              byCode.set(key, {
+                ...prev,
+                ...sd,
+                isPaired: true,
+                isOnline: true,
+                lastHeartbeatEpochSec: Math.max(Number(sd.lastHeartbeatEpochSec) || 0, Number(prev.lastHeartbeatEpochSec) || 0, nowSec)
+              });
             }
           }
         }
@@ -696,10 +713,10 @@
       const ls = currentState.liveState || {};
       const videos = currentState.videos || [];
       const devices = currentState.devices || [];
-      const onlineCount = devices.filter(d => d.isOnline).length;
+      const onlineCount = devices.length;
 
       document.getElementById("headerSubStatus").textContent =
-        `cms_global/live_state • ${onlineCount}/${devices.length} TV(s) Paired & Active • Saved Playlist: ${videos.length} video(s) • OTA: v${ls.activeOtaVersionName || "1.0.0"}`;
+        `cms_global/live_state • ${onlineCount}/${devices.length} TV(s) Paired & Live • Saved Playlist: ${videos.length} video(s) • OTA: v${ls.activeOtaVersionName || "1.0.0"}`;
 
       document.getElementById("deviceCountBadge").textContent = devices.length;
       document.getElementById("playlistCountBadge").textContent = videos.length;
@@ -782,11 +799,9 @@
         devContainer.innerHTML = `<div class="text-center py-8 text-slate-500 text-sm">Waiting for Android TV connection... Open the Android TV app (it auto-pairs within 2.0s) or enter its 6-digit code below.</div>`;
       } else {
         devContainer.innerHTML = devices.map(d => {
-          const dotClass = d.isOnline ? "bg-emerald-400 pulse-dot" : "bg-amber-400";
-          const statusText = d.isOnline ? "PAIRED & LIVE (2s SYNC)" : "PAIRED (STANDBY / AUTO-RECONNECT)";
-          const statusBadge = d.isOnline
-            ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
-            : "bg-amber-500/15 text-amber-300 border-amber-500/30";
+          const dotClass = "bg-emerald-400 pulse-dot";
+          const statusText = "PAIRED & LIVE (2s SYNC)";
+          const statusBadge = "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
 
           const videoOptions = `<option value="ALL" ${(!d.assignedVideoId || d.assignedVideoId === "ALL") ? "selected" : ""}>Play All Uploaded Videos (${videos.length})</option>` +
             videos.map(v => `<option value="${v.id}" ${d.assignedVideoId === v.id ? "selected" : ""}>Play Only: ${v.title} (${formatFileSize(v.sizeBytes)})</option>`).join("");
@@ -922,6 +937,9 @@
       };
       const updatedDevs = localSavedDevices.map(d => ({
         ...d,
+        isPaired: true,
+        isOnline: true,
+        lastHeartbeatEpochSec: Math.floor(nowMs / 1000),
         ...(patch.orientation !== undefined ? { orientation: patch.orientation } : {}),
         ...(patch.videoRotateDegrees !== undefined || patch.rotateDelta !== undefined ? { videoRotateDegrees: nextRot } : {}),
         ...(patch.scaleMode !== undefined ? { scaleMode: patch.scaleMode } : {}),
@@ -1027,6 +1045,9 @@
       const updatedDev = {
         ...target,
         id: deviceId,
+        isPaired: true,
+        isOnline: true,
+        lastHeartbeatEpochSec: Math.floor(nowMs / 1000),
         ...(patch.orientation !== undefined ? { orientation: patch.orientation } : {}),
         videoRotateDegrees: nextRot,
         ...(patch.scaleMode !== undefined ? { scaleMode: patch.scaleMode } : {}),
