@@ -51,12 +51,33 @@ import com.example.ui.viewmodel.SignageViewModel
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installUnattendedCrashRecoveryGuard()
         applyUnattendedSignageWindowFlags()
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
                 PulseCastTvClientApp()
             }
+        }
+    }
+
+    private fun installUnattendedCrashRecoveryGuard() {
+        val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                val restartIntent = android.content.Intent(applicationContext, MainActivity::class.java).apply {
+                    addFlags(
+                        android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
+                            android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    )
+                }
+                applicationContext.startActivity(restartIntent)
+            } catch (_: Throwable) {
+                previousHandler?.uncaughtException(thread, throwable)
+            }
+            android.os.Process.killProcess(android.os.Process.myPid())
+             kotlin.system.exitProcess(10)
         }
     }
 

@@ -230,14 +230,17 @@ fun TvDisplayClientScreen(
         DefaultDataSource.Factory(context, httpFactory)
     }
 
-    // Media3 ExoPlayer configured with software decoder fallback & gapless looping (ConcatenatingMediaSource + REPEAT_MODE_ALL)
+    // Media3 ExoPlayer configured with software decoder fallback & native gapless looping (REPEAT_MODE_ALL)
     val exoPlayer = remember(context) {
         val renderersFactory = DefaultRenderersFactory(context)
             .setEnableDecoderFallback(true)
-        ExoPlayer.Builder(context, renderersFactory).build().apply {
-            repeatMode = Player.REPEAT_MODE_ALL
-            playWhenReady = true
-        }
+        ExoPlayer.Builder(context, renderersFactory)
+            .setMediaSourceFactory(ProgressiveMediaSource.Factory(dataSourceFactory))
+            .build()
+            .apply {
+                repeatMode = Player.REPEAT_MODE_ALL
+                playWhenReady = true
+            }
     }
 
     // Automatically manage hardware MediaCodec across background/foreground transitions and ensure hands-free auto-play on resume
@@ -299,9 +302,11 @@ fun TvDisplayClientScreen(
         effectiveVideos
             .filter { v ->
                 v.id !in quarantinedVideoIds &&
+                    v.localFileName.lowercase(java.util.Locale.US) !in quarantinedVideoIds &&
                     localManager.isRealMp4PlayableOffline(v.localFileName) &&
                     localManager.getLocalVideoUri(v.localFileName) != null
             }
+            .distinctBy { it.localFileName.trim().lowercase(java.util.Locale.US) }
             .sortedWith { a, b ->
                 val na = localManager.extractReelNumber(a.title)
                     ?: localManager.extractReelNumber(a.localFileName)
@@ -313,134 +318,147 @@ fun TvDisplayClientScreen(
             }
     }
 
-    // Stable signature based on ordered reel IDs and resolved local filenames
+    // Key playlist signature STRICTLY by ordered local filenames (reel-1.mp4|reel-2.mp4...) so cloud ID/metadata
+    // updates during 2.0s background sync NEVER reset or blink the video player!
     val playlistSignature = remember(playableVideos) {
         playableVideos.joinToString("|") { v ->
-            "${v.id}:${v.title}:${v.localFileName}"
+            v.localFileName.trim().lowercase(java.util.Locale.US)
         }
     }
 
-    val concatenatingSource = remember(context) { ConcatenatingMediaSource() }
-    val loadedMediaIds = remember { mutableListOf<String>() }
+    val loadedMediaKeys = remember { mutableListOf<String>() }
 
     LaunchedEffect(playlistSignature) {
-        if (playableVideos.isEmpty()) {
-            exoPlayer.stop()
-            exoPlayer.clearMediaItems()
-            concatenatingSource.clear()
-            loadedMediaIds.clear()
-            val statusTitle = if (effectiveVideos.isEmpty()) {
-                "Standby (Upload Video on Web CMS)"
+        try {
+            if (playableVideos.isEmpty()) {
+                exoPlayer.stop()
+                exoPlayer.clearMediaItems()
+                loadedMediaKeys.clear()
+                val statusTitle = if (effectiveVideos.isEmpty()) {
+                    "Standby (Upload Video on Web CMS)"
+                } else {
+                    "Syncing Video: ${effectiveVideos.first().title}"
+                }
+                viewModel.onActiveVideoChanged(statusTitle)
             } else {
-                "Syncing Video: ${effectiveVideos.first().title}"
-            }
-            viewModel.onActiveVideoChanged(statusTitle)
-        } else {
-            val targetIds = playableVideos.map { "${it.id}:${it.localFileName}" }
-            val isPrefixAppend = loadedMediaIds.isNotEmpty() &&
-                targetIds.size > loadedMediaIds.size &&
-                targetIds.subList(0, loadedMediaIds.size) == loadedMediaIds.toList() &&
-                exoPlayer.mediaItemCount == loadedMediaIds.size
+                val targetKeys = playableVideos.map { it.localFileName.trim().lowercase(java.util.Locale.US) }
+                val isPrefixAppend = loadedMediaKeys.isNotEmpty() &&
+                    targetKeys.size > loadedMediaKeys.size &&
+                    targetKeys.subList(0, loadedMediaKeys.size) == loadedMediaKeys.toList() &&
+                    exoPlayer.mediaItemCount == loadedMediaKeys.size
 
-            if (isPrefixAppend) {
-                // Seamlessly append newly cached reels (e.g. reel-2, reel-3, reel-4) in line WITHOUT restarting reel-1!
-                for (i in loadedMediaIds.size until playableVideos.size) {
-                    val video = playableVideos[i]
-                    val playableOfflineUri = localManager.getLocalVideoUri(video.localFileName) ?: continue
-                    val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
-                        .createMediaSource(
-                            MediaItem.Builder()
-                                .setUri(playableOfflineUri)
-                                .setMediaId(video.id)
-                                .build()
-                        )
-                    concatenatingSource.addMediaSource(mediaSource)
-                    loadedMediaIds.add("${video.id}:${video.localFileName}")
-                }
-                if (!exoPlayer.isPlaying && exoPlayer.playbackState == Player.STATE_READY) {
-                    exoPlayer.playWhenReady = true
-                    exoPlayer.play()
-                }
-            } else if (targetIds != loadedMediaIds.toList() || exoPlayer.mediaItemCount == 0) {
-                // Preserve currently playing reel & position if it still exists in the updated sequential list
-                val currentMediaId = exoPlayer.currentMediaItem?.mediaId
-                val preservedPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
-                val wasPlaying = exoPlayer.isPlaying
-
-                concatenatingSource.clear()
-                loadedMediaIds.clear()
-                playableVideos.forEach { video ->
-                    val playableOfflineUri = localManager.getLocalVideoUri(video.localFileName) ?: return@forEach
-                    val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
-                        .createMediaSource(
-                            MediaItem.Builder()
-                                .setUri(playableOfflineUri)
-                                .setMediaId(video.id)
-                                .build()
-                        )
-                    concatenatingSource.addMediaSource(mediaSource)
-                    loadedMediaIds.add("${video.id}:${video.localFileName}")
-                }
-                val newIndex = if (currentMediaId != null) {
-                    playableVideos.indexOfFirst { it.id == currentMediaId }.takeIf { it >= 0 } ?: 0
-                } else {
-                    0
-                }
-                val seekPos = if (currentMediaId != null && playableVideos.getOrNull(newIndex)?.id == currentMediaId) {
-                    preservedPositionMs
-                } else {
-                    0L
-                }
-                exoPlayer.setMediaSource(concatenatingSource, false)
-                if (newIndex in playableVideos.indices) {
-                    exoPlayer.seekTo(newIndex, seekPos)
-                }
-                if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
-                    exoPlayer.prepare()
-                    exoPlayer.playWhenReady = true
-                    if (wasPlaying || exoPlayer.playWhenReady) {
+                if (isPrefixAppend) {
+                    // Seamlessly append newly cached reels (e.g. reel-2, reel-3, reel-4) in line WITHOUT touching or blinking reel-1!
+                    for (i in loadedMediaKeys.size until playableVideos.size) {
+                        val video = playableVideos[i]
+                        val fileKey = video.localFileName.trim().lowercase(java.util.Locale.US)
+                        val playableOfflineUri = localManager.getLocalVideoUri(video.localFileName) ?: continue
+                        val mediaItem = MediaItem.Builder()
+                            .setUri(playableOfflineUri)
+                            .setMediaId(fileKey)
+                            .build()
+                        exoPlayer.addMediaItem(mediaItem)
+                        loadedMediaKeys.add(fileKey)
+                    }
+                    if (!exoPlayer.isPlaying && exoPlayer.playbackState == Player.STATE_READY) {
+                        exoPlayer.playWhenReady = true
                         exoPlayer.play()
                     }
+                } else if (targetKeys != loadedMediaKeys.toList() || exoPlayer.mediaItemCount == 0) {
+                    // Preserve currently playing local file & position if it still exists in the updated sequential list
+                    val currentMediaKey = exoPlayer.currentMediaItem?.mediaId
+                    val preservedPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+                    val wasPlaying = exoPlayer.isPlaying
+
+                    val newMediaItems = mutableListOf<MediaItem>()
+                    val newKeys = mutableListOf<String>()
+                    playableVideos.forEach { video ->
+                        val fileKey = video.localFileName.trim().lowercase(java.util.Locale.US)
+                        val playableOfflineUri = localManager.getLocalVideoUri(video.localFileName) ?: return@forEach
+                        val mediaItem = MediaItem.Builder()
+                            .setUri(playableOfflineUri)
+                            .setMediaId(fileKey)
+                            .build()
+                        newMediaItems.add(mediaItem)
+                        newKeys.add(fileKey)
+                    }
+
+                    if (newMediaItems.isNotEmpty()) {
+                        loadedMediaKeys.clear()
+                        loadedMediaKeys.addAll(newKeys)
+                        val newIndex = if (currentMediaKey != null) {
+                            newKeys.indexOf(currentMediaKey).takeIf { it >= 0 } ?: 0
+                        } else {
+                            0
+                        }
+                        val seekPos = if (currentMediaKey != null && newKeys.getOrNull(newIndex) == currentMediaKey) {
+                            preservedPositionMs
+                        } else {
+                            0L
+                        }
+                        exoPlayer.setMediaItems(newMediaItems, newIndex, seekPos)
+                        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                            exoPlayer.prepare()
+                            exoPlayer.playWhenReady = true
+                            if (wasPlaying || exoPlayer.playWhenReady) {
+                                exoPlayer.play()
+                            }
+                        }
+                        val activeTitle = playableVideos.getOrNull(newIndex)?.title
+                            ?: playableVideos.firstOrNull()?.title
+                            ?: "Playing"
+                        viewModel.onActiveVideoChanged(activeTitle)
+                    }
                 }
-                val activeTitle = playableVideos.getOrNull(newIndex)?.title
-                    ?: playableVideos.firstOrNull()?.title
-                    ?: "Playing"
-                viewModel.onActiveVideoChanged(activeTitle)
             }
+        } catch (_: Throwable) {
         }
     }
 
     DisposableEffect(exoPlayer, playableVideos) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
-                isBufferingNow = (playbackState == Player.STATE_BUFFERING)
-                if (!lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
-                if (playbackState == Player.STATE_READY && !exoPlayer.isPlaying) {
-                    exoPlayer.playWhenReady = true
-                    exoPlayer.play()
-                } else if (playbackState == Player.STATE_ENDED && playableVideos.isNotEmpty()) {
-                    exoPlayer.seekTo(0, 0L)
-                    exoPlayer.playWhenReady = true
-                    exoPlayer.play()
+                try {
+                    isBufferingNow = (playbackState == Player.STATE_BUFFERING)
+                    if (!lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
+                    if (playbackState == Player.STATE_READY && !exoPlayer.isPlaying) {
+                        exoPlayer.playWhenReady = true
+                        exoPlayer.play()
+                    } else if (playbackState == Player.STATE_ENDED && playableVideos.isNotEmpty()) {
+                        exoPlayer.seekTo(0, 0L)
+                        exoPlayer.playWhenReady = true
+                        exoPlayer.play()
+                    }
+                } catch (_: Throwable) {
                 }
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                val idx = exoPlayer.currentMediaItemIndex.coerceIn(0, (playableVideos.size - 1).coerceAtLeast(0))
-                currentMediaIndex = idx
-                playableVideos.getOrNull(idx)?.let { activeVid ->
-                    viewModel.onActiveVideoChanged(activeVid.title)
+                try {
+                    val idx = exoPlayer.currentMediaItemIndex.coerceIn(0, (playableVideos.size - 1).coerceAtLeast(0))
+                    currentMediaIndex = idx
+                    playableVideos.getOrNull(idx)?.let { activeVid ->
+                        viewModel.onActiveVideoChanged(activeVid.title)
+                    }
+                } catch (_: Throwable) {
                 }
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                val failedMediaId = exoPlayer.currentMediaItem?.mediaId
-                val activeVid = playableVideos.firstOrNull { it.id == failedMediaId }
-                    ?: playableVideos.getOrNull(currentMediaIndex)
-                if (activeVid != null) {
-                    // Quarantine this video ID immediately so ExoPlayer never retries a malformed NAL file in a loop
-                    quarantinedVideoIds = quarantinedVideoIds + activeVid.id
-                    localManager.deleteCachedVideoFile(activeVid.localFileName)
+                try {
+                    val failedMediaKey = exoPlayer.currentMediaItem?.mediaId
+                    val activeVid = playableVideos.firstOrNull {
+                        it.id == failedMediaKey ||
+                            it.localFileName.trim().lowercase(java.util.Locale.US) == failedMediaKey
+                    } ?: playableVideos.getOrNull(currentMediaIndex)
+                    if (activeVid != null) {
+                        // Quarantine this video immediately so ExoPlayer never retries a malformed file in a loop
+                        quarantinedVideoIds = quarantinedVideoIds +
+                            activeVid.id +
+                            activeVid.localFileName.trim().lowercase(java.util.Locale.US)
+                        localManager.deleteCachedVideoFile(activeVid.localFileName)
+                    }
+                } catch (_: Throwable) {
                 }
             }
         }
@@ -1338,6 +1356,8 @@ private fun RotatableTextureVideoPlayer(
         AndroidView(
             factory = { ctx ->
                 (LayoutInflater.from(ctx).inflate(R.layout.exo_texture_player_view, null, false) as PlayerView).apply {
+                    setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+                    setKeepContentOnPlayerReset(true)
                     this.useController = useController
                     if (useController) {
                         controllerShowTimeoutMs = 2000
@@ -1347,12 +1367,16 @@ private fun RotatableTextureVideoPlayer(
                 }
             },
             update = { playerView ->
-                playerView.useController = useController
-                playerView.player = exoPlayer
+                if (playerView.player !== exoPlayer) {
+                    playerView.player = exoPlayer
+                }
+                if (playerView.useController != useController) {
+                    playerView.useController = useController
+                }
                 if (playerView.resizeMode != exoResizeMode) {
                     playerView.resizeMode = exoResizeMode
+                    playerView.requestLayout()
                 }
-                playerView.requestLayout()
             },
             onRelease = { playerView ->
                 playerView.player = null

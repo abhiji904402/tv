@@ -4,5 +4,7 @@
     android:id="@+id/exo_texture_player_view"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    app:keep_content_on_player_reset="true"
+    app:shutter_background_color="@android:color/transparent"
     app:surface_type="texture_view"
     app:use_controller="false" />
