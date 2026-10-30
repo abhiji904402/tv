@@ -252,8 +252,14 @@
     const STORAGE_VIDEOS_KEY = "pulsecast_saved_videos_v3";
     const STORAGE_DELETED_IDS_KEY = "pulsecast_deleted_video_ids_v3";
     const STORAGE_DEVICES_KEY = "pulsecast_saved_devices_v3";
+    const STORAGE_DELETED_DEVICES_KEY = "pulsecast_deleted_device_ids_v3";
     const IDB_NAME = "pulsecast_video_vault_db";
     const IDB_STORE = "video_blobs";
+
+    function normalizeAngle(deg) {
+      const n = Number(deg) || 0;
+      return ((n % 360) + 360) % 360;
+    }
 
     function isDemoOrLegacyVideo(v) {
       if (!v || !v.id) return true;
@@ -289,6 +295,7 @@
     let localSavedVideos = loadSavedVideosFromStorage();
     let localDeletedIds = loadDeletedIdsFromStorage();
     let localSavedDevices = loadSavedDevicesFromStorage();
+    let localDeletedDeviceIds = loadDeletedDeviceIdsFromStorage();
     let blobObjectUrls = {}; // videoId -> local Blob ObjectURL for instant 100% reliable preview
     let selectedPreviewVideoId = localSavedVideos.length > 0 ? localSavedVideos[0].id : null;
     let pendingFilePreviewUrl = ""; // Set when user picks a local file before clicking Upload
@@ -358,6 +365,24 @@
       try {
         localSavedDevices = Array.isArray(devicesList) ? devicesList : [];
         localStorage.setItem(STORAGE_DEVICES_KEY, JSON.stringify(localSavedDevices));
+      } catch (_) {}
+    }
+
+    function loadDeletedDeviceIdsFromStorage() {
+      try {
+        const raw = localStorage.getItem(STORAGE_DELETED_DEVICES_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function saveDeletedDeviceIdsToStorage(idsList) {
+      try {
+        localDeletedDeviceIds = Array.from(new Set(idsList));
+        localStorage.setItem(STORAGE_DELETED_DEVICES_KEY, JSON.stringify(localDeletedDeviceIds));
       } catch (_) {}
     }
 
@@ -479,18 +504,47 @@
       return mergedList;
     }
 
-    function mergeDevicesWithVault(serverDevices) {
+    function mergeDevicesWithVault(serverDevices, serverDeletedDeviceIds) {
+      const mergedDeletedDevs = Array.from(
+        new Set([...(localDeletedDeviceIds || []), ...(serverDeletedDeviceIds || [])])
+      );
+      saveDeletedDeviceIdsToStorage(mergedDeletedDevs);
+      const deletedDevSet = new Set(mergedDeletedDevs);
+
       const byCode = new Map();
       for (const ld of localSavedDevices) {
         if (ld && (ld.pairingCode || ld.id)) {
+          if (deletedDevSet.has(ld.id) || deletedDevSet.has(ld.pairingCode)) continue;
           byCode.set(ld.pairingCode || ld.id, { ...ld, isPaired: true });
         }
       }
       for (const sd of (serverDevices || [])) {
         if (sd && (sd.pairingCode || sd.id)) {
+          if (deletedDevSet.has(sd.id) || deletedDevSet.has(sd.pairingCode)) continue;
           const key = sd.pairingCode || sd.id;
-          const prev = byCode.get(key) || {};
-          byCode.set(key, { ...prev, ...sd, isPaired: true });
+          const prev = byCode.get(key);
+          if (!prev) {
+            byCode.set(key, { ...sd, isPaired: true });
+          } else {
+            const localMs = Number(prev.settingsUpdatedAtMs) || 0;
+            const serverMs = Number(sd.settingsUpdatedAtMs) || 0;
+            if (localMs > serverMs) {
+              // Keep newer local rotation/orientation/scale settings while updating live telemetry
+              byCode.set(key, {
+                ...sd,
+                ...prev,
+                isOnline: sd.isOnline !== undefined ? sd.isOnline : prev.isOnline,
+                lastHeartbeatEpochSec: sd.lastHeartbeatEpochSec || prev.lastHeartbeatEpochSec,
+                currentVideoTitle: sd.currentVideoTitle || prev.currentVideoTitle,
+                cachedVideoCount: sd.cachedVideoCount !== undefined ? sd.cachedVideoCount : prev.cachedVideoCount,
+                otaStatus: sd.otaStatus || prev.otaStatus,
+                installedVersionName: sd.installedVersionName || prev.installedVersionName,
+                isPaired: true
+              });
+            } else {
+              byCode.set(key, { ...prev, ...sd, isPaired: true });
+            }
+          }
         }
       }
       const merged = Array.from(byCode.values());
@@ -554,15 +608,22 @@
           body: JSON.stringify({
             videos: localSavedVideos,
             deletedVideoIds: localDeletedIds,
-            devices: localSavedDevices
+            devices: localSavedDevices,
+            deletedDeviceIds: localDeletedDeviceIds
           })
         });
         const data = await res.json();
         if (data && data.ok) {
           const mergedVideos = mergeVideosWithVault(data.videos || [], data.deletedVideoIds || []);
-          const mergedDevices = mergeDevicesWithVault(data.devices || []);
+          const mergedDevices = mergeDevicesWithVault(data.devices || [], data.deletedDeviceIds || []);
+          const localLsMs = Number(currentState.liveState && currentState.liveState.settingsUpdatedAtMs) || 0;
+          const serverLsMs = Number(data.liveState && data.liveState.settingsUpdatedAtMs) || 0;
+          const effectiveLs = localLsMs > serverLsMs
+            ? { ...(data.liveState || {}), ...currentState.liveState }
+            : (data.liveState || currentState.liveState);
           currentState = {
             ...data,
+            liveState: effectiveLs,
             videos: mergedVideos,
             devices: mergedDevices
           };
@@ -698,10 +759,22 @@
       }
 
       const rot = ls.videoRotateDegrees !== undefined
-        ? Number(ls.videoRotateDegrees)
+        ? normalizeAngle(ls.videoRotateDegrees)
         : (ls.orientation === "ROTATE_90" ? 90 : ls.orientation === "ROTATE_180" ? 180 : ls.orientation === "ROTATE_270" ? 270 : 0);
-      videoEl.style.transform = `rotate(${rot}deg)`;
-      videoEl.style.objectFit = ls.scaleMode === "FIT" ? "contain" : "cover";
+      const isQuarterTurn = rot === 90 || rot === 270;
+      const activeScaleMode = String(ls.scaleMode || "FILL").toUpperCase();
+      let previewScale = 1.0;
+      if (activeScaleMode === "FIT") {
+        videoEl.style.objectFit = "contain";
+        previewScale = isQuarterTurn ? 0.56 : 1.0;
+      } else if (activeScaleMode === "ZOOM") {
+        videoEl.style.objectFit = "cover";
+        previewScale = isQuarterTurn ? 1.77 : 1.18;
+      } else {
+        videoEl.style.objectFit = "fill";
+        previewScale = isQuarterTurn ? 1.77 : 1.0;
+      }
+      videoEl.style.transform = `rotate(${rot}deg) scale(${previewScale})`;
 
       // Render Per-Device Cards
       const devContainer = document.getElementById("devicesContainer");
@@ -719,7 +792,7 @@
             videos.map(v => `<option value="${v.id}" ${d.assignedVideoId === v.id ? "selected" : ""}>Play Only: ${v.title} (${formatFileSize(v.sizeBytes)})</option>`).join("");
 
           const screenOrient = (d.orientation === "PORTRAIT") ? "PORTRAIT" : "LANDSCAPE";
-          const videoDeg = d.videoRotateDegrees !== undefined ? Number(d.videoRotateDegrees) : 0;
+          const videoDeg = d.videoRotateDegrees !== undefined ? normalizeAngle(d.videoRotateDegrees) : 0;
           const devScale = d.scaleMode || "FILL";
 
           const screenOrientBtns = ["LANDSCAPE", "PORTRAIT"].map(o => {
@@ -755,6 +828,9 @@
                   <span class="px-2.5 py-0.5 text-[11px] font-mono-code rounded-full border ${statusBadge}">${statusText}</span>
                   <button onclick="controlDevice('${d.id}', {isMuted: ${!d.isMuted}})" class="px-2.5 py-1 rounded-lg text-xs font-mono-code border ${d.isMuted ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' : 'bg-slate-900 text-emerald-300 border-slate-700'}">
                     ${d.isMuted ? '🔇 Muted' : '🔊 Audio On'}
+                  </button>
+                  <button onclick="removeDevice('${d.id}', '${d.pairingCode}')" class="px-2.5 py-1 rounded-lg text-xs font-mono-code bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40">
+                    🗑 Remove TV
                   </button>
                 </div>
               </div>
@@ -826,17 +902,52 @@
     }
 
     async function updateGlobalState(patch) {
+      const nowMs = Date.now();
+      const prevLs = currentState.liveState || {};
+      let nextRot = prevLs.videoRotateDegrees !== undefined ? normalizeAngle(prevLs.videoRotateDegrees) : 0;
+      if (patch.videoRotateDegrees !== undefined) {
+        nextRot = normalizeAngle(patch.videoRotateDegrees);
+      } else if (patch.rotateDelta !== undefined) {
+        nextRot = normalizeAngle(nextRot + Number(patch.rotateDelta));
+      }
+      const pushCmd = patch.lastPushCommand || ("GLOBAL_STATE_" + nowMs);
+      currentState.liveState = {
+        ...prevLs,
+        ...(patch.orientation !== undefined ? { orientation: patch.orientation } : {}),
+        videoRotateDegrees: nextRot,
+        ...(patch.scaleMode !== undefined ? { scaleMode: patch.scaleMode } : {}),
+        ...(patch.isMuted !== undefined ? { isMuted: Boolean(patch.isMuted) } : {}),
+        settingsUpdatedAtMs: nowMs,
+        lastPushCommand: pushCmd
+      };
+      const updatedDevs = localSavedDevices.map(d => ({
+        ...d,
+        ...(patch.orientation !== undefined ? { orientation: patch.orientation } : {}),
+        ...(patch.videoRotateDegrees !== undefined || patch.rotateDelta !== undefined ? { videoRotateDegrees: nextRot } : {}),
+        ...(patch.scaleMode !== undefined ? { scaleMode: patch.scaleMode } : {}),
+        ...(patch.isMuted !== undefined ? { isMuted: Boolean(patch.isMuted) } : {}),
+        ...(patch.assignedVideoId !== undefined ? { assignedVideoId: patch.assignedVideoId } : {}),
+        settingsUpdatedAtMs: nowMs,
+        lastPushCommand: pushCmd
+      }));
+      saveDevicesToStorage(updatedDevs);
+      currentState.devices = updatedDevs;
+      renderDashboard();
+
       await fetch("/api/state", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...patch,
+          videoRotateDegrees: nextRot,
+          lastPushCommand: pushCmd,
           clientVideos: localSavedVideos,
           deletedVideoIds: localDeletedIds,
-          clientDevices: localSavedDevices
+          clientDevices: localSavedDevices,
+          deletedDeviceIds: localDeletedDeviceIds
         })
       });
-      showToast("Synced setting to Android TV fleet!");
+      showToast(`Synced (${currentState.liveState.orientation || "LANDSCAPE"} • ${nextRot}° • ${currentState.liveState.scaleMode || "FILL"}) to TV Fleet!`);
       fetchLiveState();
     }
 
@@ -860,6 +971,9 @@
         alert("Please enter the 6-digit pairing code shown on the Android TV client.");
         return;
       }
+      saveDeletedDeviceIdsToStorage(
+        localDeletedDeviceIds.filter(id => id !== code && id !== `tv_${code}`)
+      );
       const res = await fetch("/api/pair", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -869,12 +983,13 @@
           isPaired: true,
           clientVideos: localSavedVideos,
           deletedVideoIds: localDeletedIds,
-          clientDevices: localSavedDevices
+          clientDevices: localSavedDevices,
+          deletedDeviceIds: localDeletedDeviceIds
         })
       });
       const data = await res.json().catch(() => ({}));
       if (data && data.device) {
-        mergeDevicesWithVault([data.device]);
+        mergeDevicesWithVault([data.device], []);
       }
       document.getElementById("pairCodeInput").value = "";
       document.getElementById("pairNameInput").value = "";
@@ -882,17 +997,79 @@
       fetchLiveState();
     }
 
+    async function removeDevice(deviceId, pairingCode) {
+      const newDeleted = Array.from(new Set([...localDeletedDeviceIds, deviceId, pairingCode].filter(Boolean)));
+      saveDeletedDeviceIdsToStorage(newDeleted);
+      const remaining = localSavedDevices.filter(d => d.id !== deviceId && d.pairingCode !== pairingCode);
+      saveDevicesToStorage(remaining);
+      currentState.devices = remaining;
+      renderDashboard();
+
+      await fetch("/api/devices/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deviceId, pairingCode })
+      });
+      showToast(`Removed TV (${pairingCode || deviceId}) from CMS Dashboard`);
+      fetchLiveState();
+    }
+
     async function controlDevice(deviceId, patch) {
+      const nowMs = Date.now();
+      const target = localSavedDevices.find(d => d.id === deviceId) || (currentState.devices || []).find(d => d.id === deviceId) || {};
+      let nextRot = target.videoRotateDegrees !== undefined ? normalizeAngle(target.videoRotateDegrees) : 0;
+      if (patch.videoRotateDegrees !== undefined) {
+        nextRot = normalizeAngle(patch.videoRotateDegrees);
+      } else if (patch.rotateDelta !== undefined) {
+        nextRot = normalizeAngle(nextRot + Number(patch.rotateDelta));
+      }
+      const pushCmd = `DEVICE_CTRL_${deviceId}_${nowMs}`;
+      const updatedDev = {
+        ...target,
+        id: deviceId,
+        ...(patch.orientation !== undefined ? { orientation: patch.orientation } : {}),
+        videoRotateDegrees: nextRot,
+        ...(patch.scaleMode !== undefined ? { scaleMode: patch.scaleMode } : {}),
+        ...(patch.isMuted !== undefined ? { isMuted: Boolean(patch.isMuted) } : {}),
+        ...(patch.assignedVideoId !== undefined ? { assignedVideoId: patch.assignedVideoId } : {}),
+        settingsUpdatedAtMs: nowMs,
+        lastPushCommand: pushCmd
+      };
+      const nextDevices = localSavedDevices.some(d => d.id === deviceId)
+        ? localSavedDevices.map(d => d.id === deviceId ? updatedDev : d)
+        : [...localSavedDevices, updatedDev];
+      saveDevicesToStorage(nextDevices);
+      currentState.devices = nextDevices;
+      currentState.liveState = {
+        ...(currentState.liveState || {}),
+        orientation: updatedDev.orientation || (currentState.liveState && currentState.liveState.orientation) || "LANDSCAPE",
+        videoRotateDegrees: updatedDev.videoRotateDegrees,
+        scaleMode: updatedDev.scaleMode || (currentState.liveState && currentState.liveState.scaleMode) || "FILL",
+        isMuted: updatedDev.isMuted !== undefined ? updatedDev.isMuted : Boolean(currentState.liveState && currentState.liveState.isMuted),
+        settingsUpdatedAtMs: nowMs,
+        lastPushCommand: pushCmd
+      };
+      renderDashboard();
+
       const res = await fetch("/api/device-control", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ deviceId, ...patch })
+        body: JSON.stringify({
+          deviceId,
+          pairingCode: updatedDev.pairingCode,
+          ...patch,
+          videoRotateDegrees: nextRot,
+          clientVideos: localSavedVideos,
+          deletedVideoIds: localDeletedIds,
+          clientDevices: localSavedDevices,
+          deletedDeviceIds: localDeletedDeviceIds
+        })
       });
       const data = await res.json().catch(() => ({}));
       if (data && data.devices) {
-        mergeDevicesWithVault(data.devices);
+        mergeDevicesWithVault(data.devices, data.deletedDeviceIds || []);
       }
-      showToast(`Synced control to TV!`);
+      showToast(`Synced to TV (${updatedDev.orientation || 'LANDSCAPE'} • ${nextRot}° • ${updatedDev.scaleMode || 'FILL'})!`);
       fetchLiveState();
     }
 
@@ -1080,6 +1257,16 @@
 
     // Boot sequence: restore IndexedDB blobs, render immediately from localStorage, then start 2.0s sync
     (async function initDashboard() {
+      const videoEl = document.getElementById("livePreviewVideo");
+      if (videoEl) {
+        videoEl.addEventListener("error", () => {
+          // If a second browser opened the CMS while the video binary is being re-seeded in the background,
+          // reset lastPreviewUrl so the 2.0s sync loop reloads and plays the video as soon as re-seed finishes!
+          setTimeout(() => {
+            lastPreviewUrl = "";
+          }, 1500);
+        });
+      }
       await restoreAllVideoBlobsFromVault();
       renderDashboard();
       await fetchLiveState();

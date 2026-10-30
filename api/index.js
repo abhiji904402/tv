@@ -73,6 +73,7 @@ function getInitialStore() {
     videos: [],
     deletedVideoIds: [],
     devices: [],
+    deletedDeviceIds: [],
     zones: [
       {
         id: "zone_lobby",
@@ -113,8 +114,12 @@ function readStore() {
       const parsed = JSON.parse(raw);
       const init = getInitialStore();
       const deletedSet = new Set(Array.isArray(parsed.deletedVideoIds) ? parsed.deletedVideoIds : []);
+      const deletedDevSet = new Set(Array.isArray(parsed.deletedDeviceIds) ? parsed.deletedDeviceIds : []);
       const cleanVideos = (Array.isArray(parsed.videos) ? parsed.videos : []).filter(
         (v) => v && v.id && !deletedSet.has(v.id) && !isDemoVideoEntry(v)
+      );
+      const cleanDevices = (Array.isArray(parsed.devices) ? parsed.devices : []).filter(
+        (d) => d && !deletedDevSet.has(d.id) && !deletedDevSet.has(d.pairingCode)
       );
       return {
         ...init,
@@ -122,7 +127,8 @@ function readStore() {
         liveState: { ...init.liveState, ...(parsed.liveState || {}) },
         videos: cleanVideos,
         deletedVideoIds: Array.from(deletedSet),
-        devices: Array.isArray(parsed.devices) ? parsed.devices : [],
+        devices: cleanDevices,
+        deletedDeviceIds: Array.from(deletedDevSet),
       };
     }
   } catch (_) {
@@ -156,7 +162,7 @@ function hasServerVideoBinary(localFileName) {
  * Merges client-known videos and paired devices into the server store without resurrecting deleted videos,
  * demo videos, or broken 404 server-file links.
  */
-function reconcileClientState(store, clientVideos, clientDeletedIds, clientDevices) {
+function reconcileClientState(store, clientVideos, clientDeletedIds, clientDevices, clientDeletedDeviceIds) {
   let changed = false;
   const deletedSet = new Set(store.deletedVideoIds || []);
   if (Array.isArray(clientDeletedIds)) {
@@ -170,14 +176,24 @@ function reconcileClientState(store, clientVideos, clientDeletedIds, clientDevic
   }
   store.deletedVideoIds = Array.from(deletedSet);
 
-  // Strip deleted, demo, or missing-binary server-file videos from store.videos so 404s never happen
+  const deletedDevSet = new Set(store.deletedDeviceIds || []);
+  if (Array.isArray(clientDeletedDeviceIds)) {
+    for (const delDevId of clientDeletedDeviceIds) {
+      if (delDevId && !deletedDevSet.has(delDevId)) {
+        deletedDevSet.add(String(delDevId));
+        changed = true;
+      }
+    }
+  }
+  store.deletedDeviceIds = Array.from(deletedDevSet);
+
+  // Strip deleted or demo videos, while keeping all uploaded videos in store.videos so EVERY browser/device sees them!
   const beforeLen = store.videos.length;
   store.videos = (store.videos || []).filter((v) => {
     if (!v || !v.id || deletedSet.has(v.id) || isDemoVideoEntry(v)) return false;
     const isServerFile = String(v.sourceUrl || "").includes("/api/videos/file/");
     if (isServerFile && !hasServerVideoBinary(v.localFileName || `${v.id}.mp4`)) {
       global.__pulsecastPendingReseedIds.add(String(v.id));
-      return false;
     }
     return true;
   });
@@ -192,9 +208,9 @@ function reconcileClientState(store, clientVideos, clientDeletedIds, clientDevic
       const safeLocal = String(cv.localFileName || `${cv.id}.mp4`);
       const isServerFile = String(cv.sourceUrl || "").includes("/api/videos/file/");
       if (isServerFile && !hasServerVideoBinary(safeLocal)) {
-        // Request Web Dashboard to re-upload the binary from IndexedDB before advertising to TVs
         global.__pulsecastPendingReseedIds.add(String(cv.id));
-        continue;
+      } else {
+        global.__pulsecastPendingReseedIds.delete(String(cv.id));
       }
       if (!existingIds.has(cv.id)) {
         store.videos.push({
@@ -213,7 +229,6 @@ function reconcileClientState(store, clientVideos, clientDeletedIds, clientDevic
           createdAtEpochMs: Number(cv.createdAtEpochMs) || Date.now(),
         });
         existingIds.add(cv.id);
-        global.__pulsecastPendingReseedIds.delete(String(cv.id));
         changed = true;
       }
     }
@@ -221,7 +236,16 @@ function reconcileClientState(store, clientVideos, clientDeletedIds, clientDevic
     store.videos.sort((a, b) => (Number(b.createdAtEpochMs) || 0) - (Number(a.createdAtEpochMs) || 0));
   }
 
-  // Reconcile paired devices so once a TV is paired, it stays permanently paired across cold starts
+  // Filter out any explicitly removed devices
+  const beforeDevLen = (store.devices || []).length;
+  store.devices = (store.devices || []).filter(
+    (d) => d && !deletedDevSet.has(d.id) && !deletedDevSet.has(d.pairingCode)
+  );
+  if (store.devices.length !== beforeDevLen) {
+    changed = true;
+  }
+
+  // Reconcile paired devices & propagate newer orientation/rotation/scale settings across containers
   if (Array.isArray(clientDevices)) {
     const existingByCode = new Map();
     for (const d of store.devices || []) {
@@ -231,6 +255,7 @@ function reconcileClientState(store, clientVideos, clientDeletedIds, clientDevic
     }
     for (const cd of clientDevices) {
       if (!cd || (!cd.id && !cd.pairingCode)) continue;
+      if (deletedDevSet.has(cd.id) || deletedDevSet.has(cd.pairingCode)) continue;
       const key = cd.pairingCode || cd.id;
       if (!existingByCode.has(key)) {
         const restoredDevice = {
@@ -261,6 +286,29 @@ function reconcileClientState(store, clientVideos, clientDeletedIds, clientDevic
         store.devices.push(restoredDevice);
         existingByCode.set(key, restoredDevice);
         changed = true;
+      } else {
+        const existingDev = existingByCode.get(key);
+        const clientMs = Number(cd.settingsUpdatedAtMs) || 0;
+        const serverMs = Number(existingDev.settingsUpdatedAtMs) || 0;
+        if (clientMs > serverMs) {
+          if (cd.orientation) existingDev.orientation = String(cd.orientation);
+          if (cd.videoRotateDegrees !== undefined) {
+            existingDev.videoRotateDegrees = normalizeDegrees(cd.videoRotateDegrees);
+          }
+          if (cd.scaleMode) existingDev.scaleMode = String(cd.scaleMode);
+          if (cd.isMuted !== undefined) existingDev.isMuted = Boolean(cd.isMuted);
+          if (cd.assignedVideoId !== undefined) existingDev.assignedVideoId = String(cd.assignedVideoId);
+          if (cd.deviceName) existingDev.deviceName = String(cd.deviceName);
+          existingDev.settingsUpdatedAtMs = clientMs;
+          existingDev.lastPushCommand = String(cd.lastPushCommand || `DEVICE_CTRL_${clientMs}`);
+          store.liveState.orientation = existingDev.orientation;
+          store.liveState.videoRotateDegrees = existingDev.videoRotateDegrees;
+          store.liveState.scaleMode = existingDev.scaleMode;
+          store.liveState.isMuted = existingDev.isMuted;
+          store.liveState.settingsUpdatedAtMs = Math.max(Number(store.liveState.settingsUpdatedAtMs) || 0, clientMs);
+          store.liveState.lastPushCommand = existingDev.lastPushCommand;
+          changed = true;
+        }
       }
     }
   }
@@ -426,7 +474,8 @@ module.exports = async function handler(req, res) {
       store,
       body.videos,
       body.deletedVideoIds,
-      body.devices
+      body.devices,
+      body.deletedDeviceIds
     );
     if (changed) {
       writeStore(store);
@@ -504,9 +553,10 @@ module.exports = async function handler(req, res) {
     });
   }
 
-  // 4. POST /api/device-control — Per-Device Orientation, Video Rotate, Scale Mode, Mute & Video Assignment
-  if (req.method === "POST" && pathname === "/api/device-control") {
+  // 4. POST /api/device-control & POST /api/devices/delete — Per-Device Orientation, Video Rotate, Scale, Mute & Remove Device
+  if (req.method === "POST" && (pathname === "/api/device-control" || pathname === "/api/devices/delete")) {
     const {
+      action,
       deviceId,
       pairingCode,
       orientation,
@@ -519,12 +569,52 @@ module.exports = async function handler(req, res) {
       zoneId,
       kioskLocked,
     } = body;
+
+    if (pathname === "/api/devices/delete" || action === "delete") {
+      const deletedDevSet = new Set(store.deletedDeviceIds || []);
+      if (deviceId) deletedDevSet.add(String(deviceId));
+      if (pairingCode) deletedDevSet.add(String(pairingCode));
+      store.devices = (store.devices || []).filter((d) => {
+        const matchId = deviceId && d.id === deviceId;
+        const matchCode = pairingCode && d.pairingCode === String(pairingCode);
+        if (matchId || matchCode) {
+          if (d.id) deletedDevSet.add(String(d.id));
+          if (d.pairingCode) deletedDevSet.add(String(d.pairingCode));
+          return false;
+        }
+        return true;
+      });
+      store.deletedDeviceIds = Array.from(deletedDevSet);
+      writeStore(store);
+      return sendJson(res, 200, {
+        ok: true,
+        devices: store.devices,
+        deletedDeviceIds: store.deletedDeviceIds,
+      });
+    }
+
+    reconcileClientState(
+      store,
+      body.clientVideos,
+      body.deletedVideoIds,
+      body.clientDevices,
+      body.deletedDeviceIds
+    );
+
     const idx = store.devices.findIndex(
       (d) => (deviceId && d.id === deviceId) || (pairingCode && d.pairingCode === String(pairingCode))
     );
-    const nowMs = Date.now();
+    const prevMs =
+      idx !== -1
+        ? Math.max(Number(store.devices[idx].settingsUpdatedAtMs) || 0, Number(store.liveState.settingsUpdatedAtMs) || 0)
+        : Number(store.liveState.settingsUpdatedAtMs) || 0;
+    const nowMs = Math.max(Date.now(), prevMs + 1);
+
     if (idx === -1) {
-      const code = String(pairingCode || "000000").padStart(6, "0").slice(0, 6);
+      const code = String(pairingCode || String(deviceId || "").replace(/^tv_/, "") || "000000")
+        .padStart(6, "0")
+        .slice(0, 6);
+      const nextDeg = normalizeDegrees(videoRotateDegrees !== undefined ? videoRotateDegrees : rotateDelta || 0);
       const newDev = {
         id: deviceId || `tv_${code}`,
         pairingCode: code,
@@ -532,19 +622,28 @@ module.exports = async function handler(req, res) {
         zoneId: zoneId || "zone_lobby",
         isPaired: true,
         isOnline: true,
-        lastHeartbeatEpochSec: Math.floor(nowMs / 1000),
-        orientation: orientation || "LANDSCAPE",
-        videoRotateDegrees: normalizeDegrees(videoRotateDegrees || rotateDelta || 0),
-        scaleMode: scaleMode || "FILL",
-        isMuted: Boolean(isMuted),
+        lastHeartbeatEpochSec: Math.floor(Date.now() / 1000),
+        orientation: orientation || store.liveState.orientation || "LANDSCAPE",
+        videoRotateDegrees: nextDeg,
+        scaleMode: scaleMode || store.liveState.scaleMode || "FILL",
+        isMuted: isMuted !== undefined ? Boolean(isMuted) : Boolean(store.liveState.isMuted),
         assignedVideoId: assignedVideoId || "ALL",
         kioskLocked: kioskLocked !== undefined ? Boolean(kioskLocked) : true,
         settingsUpdatedAtMs: nowMs,
         lastPushCommand: `DEVICE_CTRL_${nowMs}`,
       };
       store.devices.push(newDev);
+      store.liveState = {
+        ...store.liveState,
+        orientation: newDev.orientation,
+        videoRotateDegrees: newDev.videoRotateDegrees,
+        scaleMode: newDev.scaleMode,
+        isMuted: newDev.isMuted,
+        settingsUpdatedAtMs: nowMs,
+        lastPushCommand: newDev.lastPushCommand,
+      };
       writeStore(store);
-      return sendJson(res, 200, { ok: true, device: newDev, devices: store.devices });
+      return sendJson(res, 200, { ok: true, device: newDev, devices: store.devices, liveState: store.liveState });
     }
 
     const target = store.devices[idx];
@@ -561,6 +660,7 @@ module.exports = async function handler(req, res) {
       nextRotateDeg = 270;
     }
 
+    const pushCmd = `DEVICE_CTRL_${target.id}_${nowMs}`;
     store.devices[idx] = {
       ...target,
       isPaired: true,
@@ -573,11 +673,24 @@ module.exports = async function handler(req, res) {
       ...(assignedVideoId !== undefined ? { assignedVideoId: String(assignedVideoId) } : {}),
       ...(kioskLocked !== undefined ? { kioskLocked: Boolean(kioskLocked) } : {}),
       settingsUpdatedAtMs: nowMs,
-      lastPushCommand: `DEVICE_CTRL_${nowMs}`,
+      lastPushCommand: pushCmd,
     };
-    store.liveState.lastPushCommand = `DEVICE_CTRL_${target.id}_${nowMs}`;
+    store.liveState = {
+      ...store.liveState,
+      orientation: store.devices[idx].orientation,
+      videoRotateDegrees: store.devices[idx].videoRotateDegrees,
+      scaleMode: store.devices[idx].scaleMode,
+      isMuted: store.devices[idx].isMuted,
+      settingsUpdatedAtMs: nowMs,
+      lastPushCommand: pushCmd,
+    };
     writeStore(store);
-    return sendJson(res, 200, { ok: true, device: store.devices[idx], devices: store.devices });
+    return sendJson(res, 200, {
+      ok: true,
+      device: store.devices[idx],
+      devices: store.devices,
+      liveState: store.liveState,
+    });
   }
 
   // 5. POST /api/upload-chunk — Lossless Original-Quality Video Uploader with Multi-Chunk Verification
@@ -802,47 +915,59 @@ module.exports = async function handler(req, res) {
     const nowSec = Math.floor(Date.now() / 1000);
     const code = String(body.pairingCode || "000000").padStart(6, "0").slice(0, 6);
     const deviceId = body.deviceId || `tv_${code}`;
+    const isPairingAction = pathname === "/api/pair";
 
-    reconcileClientState(store, body.clientVideos, body.deletedVideoIds, body.clientDevices);
+    if (isPairingAction) {
+      store.deletedDeviceIds = (store.deletedDeviceIds || []).filter(
+        (id) => id !== deviceId && id !== code
+      );
+    }
+
+    reconcileClientState(
+      store,
+      body.clientVideos,
+      body.deletedVideoIds,
+      body.clientDevices,
+      body.deletedDeviceIds
+    );
 
     const existing = store.devices.find((d) => d.id === deviceId || d.pairingCode === code);
-    const isPairingAction = pathname === "/api/pair";
 
     const clientSettingsMs = Number(body.settingsUpdatedAtMs) || 0;
     const serverDeviceSettingsMs = existing && existing.settingsUpdatedAtMs ? Number(existing.settingsUpdatedAtMs) : 0;
-    const preferClientSettings = isPairingAction || !existing || clientSettingsMs > serverDeviceSettingsMs;
+    const preferClientSettings = isPairingAction || (!existing && clientSettingsMs > (Number(store.liveState.settingsUpdatedAtMs) || 0)) || (existing && clientSettingsMs > serverDeviceSettingsMs);
 
     const resolvedOrientation =
       preferClientSettings && body.orientation
         ? String(body.orientation)
         : existing && existing.orientation
         ? existing.orientation
-        : body.orientation || store.liveState.orientation || "LANDSCAPE";
+        : store.liveState.orientation || body.orientation || "LANDSCAPE";
 
     const resolvedRotateDegrees =
       preferClientSettings && body.videoRotateDegrees !== undefined
         ? normalizeDegrees(body.videoRotateDegrees)
         : existing && existing.videoRotateDegrees !== undefined
         ? normalizeDegrees(existing.videoRotateDegrees)
-        : body.videoRotateDegrees !== undefined
-        ? normalizeDegrees(body.videoRotateDegrees)
-        : normalizeDegrees(store.liveState.videoRotateDegrees || 0);
+        : store.liveState.videoRotateDegrees !== undefined
+        ? normalizeDegrees(store.liveState.videoRotateDegrees)
+        : normalizeDegrees(body.videoRotateDegrees || 0);
 
     const resolvedScaleMode =
       preferClientSettings && body.scaleMode
         ? String(body.scaleMode)
         : existing && existing.scaleMode
         ? existing.scaleMode
-        : body.scaleMode || store.liveState.scaleMode || "FILL";
+        : store.liveState.scaleMode || body.scaleMode || "FILL";
 
     const resolvedMuted =
       preferClientSettings && body.isMuted !== undefined
         ? Boolean(body.isMuted)
         : existing && existing.isMuted !== undefined
         ? Boolean(existing.isMuted)
-        : body.isMuted !== undefined
-        ? Boolean(body.isMuted)
-        : Boolean(store.liveState.isMuted);
+        : store.liveState.isMuted !== undefined
+        ? Boolean(store.liveState.isMuted)
+        : Boolean(body.isMuted);
 
     const updatedDevice = {
       id: existing ? existing.id : deviceId,
@@ -857,14 +982,14 @@ module.exports = async function handler(req, res) {
         : existing
         ? existing.zoneId
         : body.zoneId || "zone_lobby",
-      isPaired: true, // Always permanently paired once connected
+      isPaired: true,
       isOnline: true,
       lastHeartbeatEpochSec: nowSec,
       orientation: resolvedOrientation,
       videoRotateDegrees: resolvedRotateDegrees,
       scaleMode: resolvedScaleMode,
       isMuted: resolvedMuted,
-      settingsUpdatedAtMs: Math.max(clientSettingsMs, serverDeviceSettingsMs),
+      settingsUpdatedAtMs: Math.max(clientSettingsMs, serverDeviceSettingsMs, Number(store.liveState.settingsUpdatedAtMs) || 0),
       assignedVideoId:
         isPairingAction && body.assignedVideoId
           ? body.assignedVideoId
@@ -898,9 +1023,15 @@ module.exports = async function handler(req, res) {
       lastOtaMessage: body.lastOtaMessage || (existing ? existing.lastOtaMessage : "Slot A Verified & Healthy"),
     };
 
-    store.devices = store.devices
-      .filter((d) => d.id !== updatedDevice.id && d.pairingCode !== code)
-      .concat(updatedDevice);
+    const isRemovedDevice =
+      !isPairingAction &&
+      ((store.deletedDeviceIds || []).includes(deviceId) || (store.deletedDeviceIds || []).includes(code));
+
+    if (!isRemovedDevice) {
+      store.devices = store.devices
+        .filter((d) => d.id !== updatedDevice.id && d.pairingCode !== code)
+        .concat(updatedDevice);
+    }
     writeStore(store);
 
     const deviceVideos =
@@ -928,6 +1059,8 @@ module.exports = async function handler(req, res) {
       videos: deviceVideos.length > 0 ? deviceVideos : store.videos,
       allVideos: store.videos,
       deletedVideoIds: store.deletedVideoIds || [],
+      deletedDeviceIds: store.deletedDeviceIds || [],
+      missingServerVideoIds: computeMissingServerVideoIds(store),
       otaReleases: store.otaReleases,
     });
   }

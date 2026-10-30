@@ -132,7 +132,9 @@ class SignageViewModel(
     private var syncLoopJob: Job? = null
     private var otaProcessingInFlight = false
     private var autoCachingInFlight = false
+    private var reseedUploadInFlight = false
     private val lastAutoCacheAttemptMs = mutableMapOf<String, Long>()
+    private val lastReseedAttemptMs = mutableMapOf<String, Long>()
     private val failedAutoCacheCounts = mutableMapOf<String, Int>()
     private val knownRemoteVideoIds = mutableSetOf<String>().apply {
         initialSavedVideos.forEach { add(it.id) }
@@ -284,17 +286,23 @@ class SignageViewModel(
                 _deviceName.value = localManager.setDeviceName(payload.deviceName)
             }
 
-            // Strictly apply remote orientation/rotation/scale ONLY when the Web CMS has a newer timestamp
-            // than our local settings timestamp. Cold serverless instances with timestamp 0 NEVER flip the screen!
+            // Apply remote orientation/rotation/scale whenever Web CMS has a newer timestamp OR sends an explicit
+            // DEVICE_CTRL / GLOBAL_STATE push command. Cold serverless instances with timestamp 0 NEVER flip the screen!
             val remoteState = payload.liveState
-            val isRemoteSettingsNewer = payload.remoteSettingsUpdatedAtMs > localSettingsUpdatedAtMs
+            val isNewPushCommand = remoteState.lastPushCommand.isNotBlank() &&
+                remoteState.lastPushCommand != lastSeenPushCommand &&
+                lastSeenPushCommand.isNotEmpty()
+            val isRemoteControlPush = isNewPushCommand &&
+                (remoteState.lastPushCommand.startsWith("DEVICE_CTRL") ||
+                    remoteState.lastPushCommand.startsWith("GLOBAL_STATE"))
+            val isRemoteSettingsNewer = payload.remoteSettingsUpdatedAtMs > localSettingsUpdatedAtMs || isRemoteControlPush
 
             if (isRemoteSettingsNewer) {
                 val prevOrient = _screenOrientation.value
                 val prevRotateDeg = _videoRotateDegrees.value
                 val prevScale = _liveState.value.scaleMode
 
-                localSettingsUpdatedAtMs = payload.remoteSettingsUpdatedAtMs
+                localSettingsUpdatedAtMs = maxOf(localSettingsUpdatedAtMs, payload.remoteSettingsUpdatedAtMs)
                 applyRemoteOrientationToState(remoteState.orientation, payload.videoRotateDegrees)
                 _liveState.value = remoteState.copy(
                     orientation = computeCombinedOrientation(_screenOrientation.value, _videoRotateDegrees.value)
@@ -319,10 +327,6 @@ class SignageViewModel(
             }
 
             _assignedVideoId.value = payload.assignedVideoId
-
-            val isNewPushCommand = remoteState.lastPushCommand.isNotBlank() &&
-                remoteState.lastPushCommand != lastSeenPushCommand &&
-                lastSeenPushCommand.isNotEmpty()
 
             if (isNewPushCommand &&
                 (remoteState.lastPushCommand.startsWith("PUSH_PLAY") ||
@@ -420,6 +424,15 @@ class SignageViewModel(
             // Automatically pre-cache any unverified playlist video in the background in 100% original quality
             triggerAutoCacheForUncachedVideos(mergedActiveList)
 
+            // If another device's browser opened the Web CMS or a serverless container cold-started and is missing
+            // a video binary that this Android TV already has verified on disk, re-seed it to /api/upload-chunk!
+            val remoteCloudIdSet = payload.allCloudVideos.map { it.id }.toSet()
+            triggerAutoReseedForMissingServerVideos(
+                mergedAllList = mergedAllList,
+                remoteCloudIds = remoteCloudIdSet,
+                missingServerIds = payload.missingServerVideoIds
+            )
+
             // Check for remote OTA software updates or rollback triggers
             val latestActiveRelease = payload.otaReleases.firstOrNull { it.releaseStatus == "ACTIVE" }
             val currentOta = _otaSlotState.value
@@ -471,6 +484,43 @@ class SignageViewModel(
                 downloadCloudVideoForOfflineViewInternal(nextUncached, isSilentAutoSync = true)
             } finally {
                 autoCachingInFlight = false
+            }
+        }
+    }
+
+    /**
+     * Ensures that if a user opens the Web CMS Dashboard on a second device's browser (phone, laptop, etc.)
+     * or a Vercel serverless container cold-starts, the 24x7 Android TV automatically re-uploads its verified
+     * local MP4 file back to the Web CMS so the video appears in the playlist and plays in Live Preview on all browsers.
+     */
+    private fun triggerAutoReseedForMissingServerVideos(
+        mergedAllList: List<PlaylistVideo>,
+        remoteCloudIds: Set<String>,
+        missingServerIds: Set<String>
+    ) {
+        if (reseedUploadInFlight || autoCachingInFlight || _chunkTelemetry.value.isActive) return
+        val now = System.currentTimeMillis()
+        val candidate = mergedAllList.firstOrNull { vid ->
+            !vid.id.startsWith("local_") &&
+                localManager.isRealMp4PlayableOffline(vid.localFileName) &&
+                (missingServerIds.contains(vid.id) || !remoteCloudIds.contains(vid.id)) &&
+                (now - (lastReseedAttemptMs[vid.id] ?: 0L) > 10_000L)
+        } ?: return
+
+        val localFile = java.io.File(localManager.videosDir, candidate.localFileName)
+        if (!localFile.exists() || localFile.length() < 256L) return
+
+        reseedUploadInFlight = true
+        lastReseedAttemptMs[candidate.id] = now
+        viewModelScope.launch {
+            try {
+                vercelClient.reseedLocalVideoToWebCms(
+                    baseUrl = _cmsServerUrl.value,
+                    video = candidate,
+                    localFile = localFile
+                )
+            } finally {
+                reseedUploadInFlight = false
             }
         }
     }

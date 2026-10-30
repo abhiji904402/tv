@@ -12,7 +12,12 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import android.util.Base64
+import java.io.File
+import java.io.FileInputStream
 import java.util.concurrent.TimeUnit
+import kotlin.math.ceil
+import kotlin.math.max
 
 data class RemoteHeartbeatSyncPayload(
     val liveState: LiveState,
@@ -21,6 +26,7 @@ data class RemoteHeartbeatSyncPayload(
     val videos: List<PlaylistVideo>,
     val allCloudVideos: List<PlaylistVideo>,
     val deletedVideoIds: Set<String>,
+    val missingServerVideoIds: Set<String> = emptySet(),
     val otaReleases: List<OtaRelease>,
     val assignedVideoId: String,
     val deviceName: String,
@@ -84,7 +90,7 @@ class VercelCmsApiClient {
                     !it.id.startsWith("local_") &&
                         !deletedVideoIds.contains(it.id) &&
                         !isDemoOrForbiddenVideo(it.id, it.title, it.sourceUrl) &&
-                        !it.sourceUrl.contains("/api/videos/file/")
+                        (it.isVerifiedCached || !it.sourceUrl.contains("/api/videos/file/"))
                 }
                 .forEach { v ->
                     clientVideosArr.put(
@@ -95,8 +101,11 @@ class VercelCmsApiClient {
                             put("backupUrl", "")
                             put("localFileName", v.localFileName)
                             put("zoneId", v.zoneId)
+                            put("targetDeviceId", "ALL")
                             put("sizeBytes", v.sizeBytes)
                             put("chunkCount", v.chunkCount)
+                            put("isVerifiedCached", true)
+                            put("sortOrder", v.sortOrder)
                         }
                     )
                 }
@@ -222,6 +231,15 @@ class VercelCmsApiClient {
                 }
             }
 
+            val missingServerSet = mutableSetOf<String>()
+            val missingArr = root.optJSONArray("missingServerVideoIds")
+            if (missingArr != null) {
+                for (i in 0 until missingArr.length()) {
+                    val mId = missingArr.optString(i)
+                    if (mId.isNotBlank()) missingServerSet.add(mId)
+                }
+            }
+
             fun parseVideoArray(arr: JSONArray?): List<PlaylistVideo> {
                 if (arr == null) return emptyList()
                 val list = mutableListOf<PlaylistVideo>()
@@ -301,6 +319,7 @@ class VercelCmsApiClient {
                     videos = deviceVideos,
                     allCloudVideos = if (allCloudVideos.isNotEmpty()) allCloudVideos else deviceVideos,
                     deletedVideoIds = remoteDeletedSet,
+                    missingServerVideoIds = missingServerSet,
                     otaReleases = parsedReleases,
                     assignedVideoId = deviceObj.optString("assignedVideoId", "ALL").ifBlank { "ALL" },
                     deviceName = deviceObj.optString("deviceName", deviceName).ifBlank { deviceName },
@@ -417,6 +436,69 @@ class VercelCmsApiClient {
                 if (resp.isSuccessful) Result.success(Unit)
                 else Result.failure(IllegalStateException("HTTP ${resp.code}"))
             }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Re-uploads a locally cached & verified MP4 file from the Android TV back to the Web CMS
+     * (/api/upload-chunk with isReseed=true) when a new Vercel container instance or a second
+     * device's browser opens the Web CMS Dashboard and needs the video metadata + binary.
+     */
+    suspend fun reseedLocalVideoToWebCms(
+        baseUrl: String,
+        video: PlaylistVideo,
+        localFile: File
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            if (!localFile.exists() || localFile.length() < 256L) {
+                return@withContext Result.failure(IllegalStateException("Local file missing"))
+            }
+            val cleanBase = baseUrl.trim().trimEnd('/')
+            val chunkSize = 1500 * 1024 // 1.5MB chunks (well below Vercel 4.5MB body limit)
+            val totalBytes = localFile.length()
+            val totalChunks = max(1, ceil(totalBytes.toDouble() / chunkSize.toDouble()).toInt())
+            val cleanFileId = video.id.removePrefix("vid_").ifBlank { video.id }
+
+            FileInputStream(localFile).use { fis ->
+                val buffer = ByteArray(chunkSize)
+                for (chunkIdx in 0 until totalChunks) {
+                    var bytesInChunk = 0
+                    while (bytesInChunk < chunkSize) {
+                        val r = fis.read(buffer, bytesInChunk, chunkSize - bytesInChunk)
+                        if (r <= 0) break
+                        bytesInChunk += r
+                    }
+                    if (bytesInChunk <= 0) break
+
+                    val b64 = Base64.encodeToString(buffer, 0, bytesInChunk, Base64.NO_WRAP)
+                    val bodyJson = JSONObject().apply {
+                        put("fileId", cleanFileId)
+                        put("videoId", video.id)
+                        put("localFileName", video.localFileName)
+                        put("fileName", video.localFileName.ifBlank { "${video.id}.mp4" })
+                        put("title", video.title)
+                        put("zoneId", video.zoneId.ifBlank { "zone_lobby" })
+                        put("targetDeviceId", "ALL")
+                        put("chunkIndex", chunkIdx)
+                        put("totalChunks", totalChunks)
+                        put("totalFileSize", totalBytes)
+                        put("base64Chunk", b64)
+                        put("isReseed", true)
+                    }
+                    val req = Request.Builder()
+                        .url("$cleanBase/api/upload-chunk")
+                        .post(bodyJson.toString().toRequestBody(jsonMediaType))
+                        .build()
+                    httpClient.newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful) {
+                            return@withContext Result.failure(IllegalStateException("HTTP ${resp.code}"))
+                        }
+                    }
+                }
+            }
+            Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
         }

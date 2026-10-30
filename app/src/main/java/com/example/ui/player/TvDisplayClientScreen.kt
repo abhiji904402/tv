@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.pm.ActivityInfo
 import android.net.Uri
 import android.view.KeyEvent
+import android.view.LayoutInflater
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -19,6 +20,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -30,6 +32,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -101,6 +104,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -130,6 +134,7 @@ import androidx.media3.exoplayer.source.ConcatenatingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.example.R
 import com.example.data.local.ChunkedStorageAndOtaManager
 import com.example.data.local.OtaSlotState
 import com.example.data.model.DiagnosticLogEntry
@@ -383,9 +388,7 @@ fun TvDisplayClientScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .graphicsLayer {
-                    rotationZ = videoRotateDegrees.toFloat()
-                },
+                .clipToBounds(),
             contentAlignment = Alignment.Center
         ) {
             if (playableVideos.isEmpty()) {
@@ -401,24 +404,12 @@ fun TvDisplayClientScreen(
                     onOpenAdminHubWithPin = { tabIdx -> viewModel.onGreenStarAdminClick(tabIdx) }
                 )
             } else if (!isAdminPanelOpen) {
-                AndroidView(
-                    factory = { ctx ->
-                        PlayerView(ctx).apply {
-                            useController = false
-                            player = exoPlayer
-                            this.resizeMode = resizeMode
-                        }
-                    },
-                    update = { playerView ->
-                        playerView.player = exoPlayer
-                        playerView.resizeMode = resizeMode
-                    },
-                    onRelease = { playerView ->
-                        playerView.player = null
-                    },
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .testTag("tv_exoplayer_view")
+                RotatableTextureVideoPlayer(
+                    exoPlayer = exoPlayer,
+                    videoRotateDegrees = videoRotateDegrees,
+                    scaleMode = liveState.scaleMode,
+                    useController = false,
+                    testTag = "tv_exoplayer_view"
                 )
             }
         }
@@ -1139,35 +1130,13 @@ private fun InlineLiveVideoPreviewCard(
                 contentAlignment = Alignment.Center
             ) {
                 if (hasPlayableVideo) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .graphicsLayer {
-                                rotationZ = videoRotateDegrees.toFloat()
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        AndroidView(
-                            factory = { ctx ->
-                                PlayerView(ctx).apply {
-                                    useController = true
-                                    controllerShowTimeoutMs = 2000
-                                    player = exoPlayer
-                                    this.resizeMode = resizeMode
-                                }
-                            },
-                            update = { playerView ->
-                                playerView.player = exoPlayer
-                                playerView.resizeMode = resizeMode
-                            },
-                            onRelease = { playerView ->
-                                playerView.player = null
-                            },
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .testTag("admin_inline_video_preview")
-                        )
-                    }
+                    RotatableTextureVideoPlayer(
+                        exoPlayer = exoPlayer,
+                        videoRotateDegrees = videoRotateDegrees,
+                        scaleMode = scaleMode,
+                        useController = true,
+                        testTag = "admin_inline_video_preview"
+                    )
                 } else {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1201,6 +1170,77 @@ private fun formatVideoBytesReadable(bytes: Long): String {
         String.format(java.util.Locale.US, "%.2f MB", mb)
     } else {
         "${(bytes / 1024L).coerceAtLeast(1L)} KB"
+    }
+}
+
+/**
+ * Inflates a TextureView-backed Media3 PlayerView (R.layout.exo_texture_player_view) inside a
+ * dimension-aware BoxWithConstraints container so that:
+ * 1) Rotating the video by 0°, 90°, 180° (upside-down TV), or 270° rotates the actual video texture
+ *    instead of distorting the aspect ratio box.
+ * 2) When rotated 90° or 270°, the unrotated layout width/height are swapped (maxHeight x maxWidth)
+ *    so that after a 90°/270° rotation the video fills the exact screen bounds without clipping.
+ * 3) Scale to Fit (FIT), Full Screen (FILL), and Zoom Video (ZOOM) work at every angle.
+ */
+@OptIn(UnstableApi::class)
+@Composable
+private fun RotatableTextureVideoPlayer(
+    exoPlayer: ExoPlayer,
+    videoRotateDegrees: Int,
+    scaleMode: String,
+    useController: Boolean,
+    testTag: String
+) {
+    val normDegrees = ((videoRotateDegrees % 360) + 360) % 360
+    val isQuarterTurn = normDegrees == 90 || normDegrees == 270
+    val normalizedScaleMode = scaleMode.trim().uppercase(java.util.Locale.US)
+    val exoResizeMode = when (normalizedScaleMode) {
+        "FILL" -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+        "ZOOM" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+        else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+    }
+    val zoomMultiplier = if (normalizedScaleMode == "ZOOM") 1.15f else 1.0f
+
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .clipToBounds(),
+        contentAlignment = Alignment.Center
+    ) {
+        val targetWidth = if (isQuarterTurn) maxHeight else maxWidth
+        val targetHeight = if (isQuarterTurn) maxWidth else maxHeight
+
+        AndroidView(
+            factory = { ctx ->
+                (LayoutInflater.from(ctx).inflate(R.layout.exo_texture_player_view, null, false) as PlayerView).apply {
+                    this.useController = useController
+                    if (useController) {
+                        controllerShowTimeoutMs = 2000
+                    }
+                    player = exoPlayer
+                    resizeMode = exoResizeMode
+                }
+            },
+            update = { playerView ->
+                playerView.useController = useController
+                playerView.player = exoPlayer
+                if (playerView.resizeMode != exoResizeMode) {
+                    playerView.resizeMode = exoResizeMode
+                }
+                playerView.requestLayout()
+            },
+            onRelease = { playerView ->
+                playerView.player = null
+            },
+            modifier = Modifier
+                .requiredSize(width = targetWidth, height = targetHeight)
+                .graphicsLayer {
+                    rotationZ = normDegrees.toFloat()
+                    scaleX = zoomMultiplier
+                    scaleY = zoomMultiplier
+                }
+                .testTag(testTag)
+        )
     }
 }
 
