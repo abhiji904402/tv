@@ -142,9 +142,19 @@ function writeStore(store) {
   }
 }
 
+global.__pulsecastPendingReseedIds = global.__pulsecastPendingReseedIds || new Set();
+
+function hasServerVideoBinary(localFileName) {
+  if (!localFileName) return false;
+  const fName = path.basename(String(localFileName));
+  if (global.__pulsecastVideoMemoryCache.has(fName)) return true;
+  const fPath = path.join(VIDEOS_DIR, fName);
+  return fs.existsSync(fPath) && fs.statSync(fPath).size > 256;
+}
+
 /**
- * Merges client-known videos and paired devices into the server store without resurrecting deleted videos
- * or demo videos. Ensures videos and paired devices NEVER disappear on refresh or serverless cold start.
+ * Merges client-known videos and paired devices into the server store without resurrecting deleted videos,
+ * demo videos, or broken 404 server-file links.
  */
 function reconcileClientState(store, clientVideos, clientDeletedIds, clientDevices) {
   let changed = false;
@@ -153,17 +163,24 @@ function reconcileClientState(store, clientVideos, clientDeletedIds, clientDevic
     for (const delId of clientDeletedIds) {
       if (delId && !deletedSet.has(delId)) {
         deletedSet.add(String(delId));
+        global.__pulsecastPendingReseedIds.delete(String(delId));
         changed = true;
       }
     }
   }
   store.deletedVideoIds = Array.from(deletedSet);
 
-  // Strip deleted or demo videos
+  // Strip deleted, demo, or missing-binary server-file videos from store.videos so 404s never happen
   const beforeLen = store.videos.length;
-  store.videos = (store.videos || []).filter(
-    (v) => v && v.id && !deletedSet.has(v.id) && !isDemoVideoEntry(v)
-  );
+  store.videos = (store.videos || []).filter((v) => {
+    if (!v || !v.id || deletedSet.has(v.id) || isDemoVideoEntry(v)) return false;
+    const isServerFile = String(v.sourceUrl || "").includes("/api/videos/file/");
+    if (isServerFile && !hasServerVideoBinary(v.localFileName || `${v.id}.mp4`)) {
+      global.__pulsecastPendingReseedIds.add(String(v.id));
+      return false;
+    }
+    return true;
+  });
   if (store.videos.length !== beforeLen) {
     changed = true;
   }
@@ -172,13 +189,20 @@ function reconcileClientState(store, clientVideos, clientDeletedIds, clientDevic
     const existingIds = new Set(store.videos.map((v) => v.id));
     for (const cv of clientVideos) {
       if (!cv || !cv.id || deletedSet.has(cv.id) || isDemoVideoEntry(cv)) continue;
+      const safeLocal = String(cv.localFileName || `${cv.id}.mp4`);
+      const isServerFile = String(cv.sourceUrl || "").includes("/api/videos/file/");
+      if (isServerFile && !hasServerVideoBinary(safeLocal)) {
+        // Request Web Dashboard to re-upload the binary from IndexedDB before advertising to TVs
+        global.__pulsecastPendingReseedIds.add(String(cv.id));
+        continue;
+      }
       if (!existingIds.has(cv.id)) {
         store.videos.push({
           id: String(cv.id),
           title: String(cv.title || "Uploaded Video").slice(0, 120),
           sourceUrl: String(cv.sourceUrl || ""),
           backupUrl: "",
-          localFileName: String(cv.localFileName || `${cv.id}.mp4`),
+          localFileName: safeLocal,
           zoneId: String(cv.zoneId || "zone_lobby"),
           targetDeviceId: String(cv.targetDeviceId || "ALL"),
           sizeBytes: Number(cv.sizeBytes) || 0,
@@ -189,6 +213,7 @@ function reconcileClientState(store, clientVideos, clientDeletedIds, clientDevic
           createdAtEpochMs: Number(cv.createdAtEpochMs) || Date.now(),
         });
         existingIds.add(cv.id);
+        global.__pulsecastPendingReseedIds.delete(String(cv.id));
         changed = true;
       }
     }
@@ -244,20 +269,18 @@ function reconcileClientState(store, clientVideos, clientDeletedIds, clientDevic
 }
 
 function computeMissingServerVideoIds(store) {
-  const missing = [];
+  const missingSet = new Set(global.__pulsecastPendingReseedIds || []);
   for (const v of store.videos || []) {
     if (!v || !v.id || !v.localFileName) continue;
     const isServerHostedFile = String(v.sourceUrl || "").includes("/api/videos/file/");
     if (!isServerHostedFile) continue;
-    const fName = path.basename(v.localFileName);
-    const fPath = path.join(VIDEOS_DIR, fName);
-    const hasInMem = global.__pulsecastVideoMemoryCache.has(fName);
-    const hasOnDisk = fs.existsSync(fPath) && fs.statSync(fPath).size > 256;
-    if (!hasInMem && !hasOnDisk) {
-      missing.push(v.id);
+    if (!hasServerVideoBinary(v.localFileName)) {
+      missingSet.add(v.id);
+    } else {
+      missingSet.delete(v.id);
     }
   }
-  return missing;
+  return Array.from(missingSet);
 }
 
 function detectMimeType(fileName) {

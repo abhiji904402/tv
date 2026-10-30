@@ -133,6 +133,7 @@ class SignageViewModel(
     private var otaProcessingInFlight = false
     private var autoCachingInFlight = false
     private val lastAutoCacheAttemptMs = mutableMapOf<String, Long>()
+    private val failedAutoCacheCounts = mutableMapOf<String, Int>()
     private val knownRemoteVideoIds = mutableSetOf<String>().apply {
         initialSavedVideos.forEach { add(it.id) }
     }
@@ -331,6 +332,7 @@ class SignageViewModel(
                 _isUsingBackupStream.value = false
                 _forcedOfflineVideoId.value = null
                 lastAutoCacheAttemptMs.clear()
+                failedAutoCacheCounts.clear()
                 showToast("▶ Web CMS Video Push received — Playing now!")
                 appendLog(LogLevel.INFO, "CMS_PUSH", "Executed remote Push & Play (${remoteState.lastPushCommand})")
             }
@@ -449,8 +451,17 @@ class SignageViewModel(
         if (autoCachingInFlight || _chunkTelemetry.value.isActive) return
         val now = System.currentTimeMillis()
         val nextUncached = activeList.firstOrNull { vid ->
-            !localManager.isRealMp4PlayableOffline(vid.localFileName) &&
-                (now - (lastAutoCacheAttemptMs[vid.id] ?: 0L) > 3_500L)
+            if (localManager.isRealMp4PlayableOffline(vid.localFileName)) {
+                false
+            } else {
+                val failCount = failedAutoCacheCounts[vid.id] ?: 0
+                val cooldownMs = when {
+                    failCount == 0 -> 3_000L
+                    failCount == 1 -> 8_000L
+                    else -> 25_000L
+                }
+                now - (lastAutoCacheAttemptMs[vid.id] ?: 0L) > cooldownMs
+            }
         } ?: return
 
         autoCachingInFlight = true
@@ -697,40 +708,45 @@ class SignageViewModel(
         isSilentAutoSync: Boolean
     ) {
         val targetName = video.localFileName.ifBlank { "${video.id}.mp4" }
-        appendLog(
-            LogLevel.INFO,
-            "OFFLINE_DL",
-            "Caching '${video.title}' in 100% original quality to local offline storage..."
-        )
-        _chunkTelemetry.value = ChunkTransferTelemetry(
-            isActive = true,
-            videoId = video.id,
-            label = "Saving '${video.title}' (Original Quality)",
-            currentChunk = 0,
-            totalChunks = 1,
-            bytesTransferred = 0L,
-            progressPercent = 5
-        )
+        if (!isSilentAutoSync) {
+            appendLog(
+                LogLevel.INFO,
+                "OFFLINE_DL",
+                "Caching '${video.title}' in 100% original quality to local offline storage..."
+            )
+            _chunkTelemetry.value = ChunkTransferTelemetry(
+                isActive = true,
+                videoId = video.id,
+                label = "Saving '${video.title}' (Original Quality)",
+                currentChunk = 0,
+                totalChunks = 1,
+                bytesTransferred = 0L,
+                progressPercent = 5
+            )
+        }
 
         val result = localManager.syncRemoteVideoToLocalCache(
             sourceUrl = video.sourceUrl,
             targetFileName = targetName
         ) { chunk, total, bytes ->
-            val pct = ((chunk.toFloat() / total.coerceAtLeast(1).toFloat()) * 100f).toInt().coerceIn(5, 99)
-            _chunkTelemetry.value = ChunkTransferTelemetry(
-                isActive = true,
-                videoId = video.id,
-                label = "Downloading '${video.title}'",
-                currentChunk = chunk,
-                totalChunks = total,
-                bytesTransferred = bytes,
-                progressPercent = pct
-            )
+            if (bytes > 0L || !isSilentAutoSync) {
+                val pct = ((chunk.toFloat() / total.coerceAtLeast(1).toFloat()) * 100f).toInt().coerceIn(5, 99)
+                _chunkTelemetry.value = ChunkTransferTelemetry(
+                    isActive = true,
+                    videoId = video.id,
+                    label = "Downloading '${video.title}'",
+                    currentChunk = chunk,
+                    totalChunks = total,
+                    bytesTransferred = bytes,
+                    progressPercent = pct
+                )
+            }
         }
 
         _chunkTelemetry.value = ChunkTransferTelemetry(isActive = false)
 
         result.onSuccess { saved ->
+            failedAutoCacheCounts.remove(video.id)
             val updatedVideo = video.copy(
                 localFileName = saved.localFileName,
                 sizeBytes = saved.sizeBytes,
@@ -740,12 +756,12 @@ class SignageViewModel(
             _videos.value = if (_videos.value.any { it.id == video.id }) {
                 _videos.value.map { if (it.id == video.id) updatedVideo else it }
             } else {
-                _videos.value + updatedVideo
+                listOf(updatedVideo) + _videos.value
             }
             _allCloudVideos.value = if (_allCloudVideos.value.any { it.id == video.id }) {
                 _allCloudVideos.value.map { if (it.id == video.id) updatedVideo else it }
             } else {
-                _allCloudVideos.value + updatedVideo
+                listOf(updatedVideo) + _allCloudVideos.value
             }
             localManager.savePlaylistVideos((_allCloudVideos.value + _videos.value).distinctBy { it.id })
             appendLog(
@@ -757,7 +773,10 @@ class SignageViewModel(
                 showToast("✔ Saved '${video.title}' for Offline View!")
             }
         }.onFailure { err ->
-            appendLog(LogLevel.INFO, "OFFLINE_DL", "Streaming '${video.title}' directly (${err.message})")
+            failedAutoCacheCounts[video.id] = (failedAutoCacheCounts[video.id] ?: 0) + 1
+            if (!isSilentAutoSync) {
+                appendLog(LogLevel.WARN, "OFFLINE_DL", "Awaiting cloud file '${video.title}' (${err.message})")
+            }
         }
     }
 

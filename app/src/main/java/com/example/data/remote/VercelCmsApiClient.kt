@@ -83,7 +83,8 @@ class VercelCmsApiClient {
                 .filter {
                     !it.id.startsWith("local_") &&
                         !deletedVideoIds.contains(it.id) &&
-                        !isDemoOrForbiddenVideo(it.id, it.title, it.sourceUrl)
+                        !isDemoOrForbiddenVideo(it.id, it.title, it.sourceUrl) &&
+                        !it.sourceUrl.contains("/api/videos/file/")
                 }
                 .forEach { v ->
                     clientVideosArr.put(

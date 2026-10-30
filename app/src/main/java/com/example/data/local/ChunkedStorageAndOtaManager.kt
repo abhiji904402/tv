@@ -97,21 +97,20 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
 
     /**
      * One-time cleanup on upgrade to remove any cached files or playlist entries that were polluted
-     * by old demo fallback redirects (mov_bbb.mp4 / flower.mp4).
+     * by old demo fallback redirects (mov_bbb.mp4 / flower.mp4) or ghost entries without local files.
      */
     private fun purgeLegacyDemoVideosAndCache() {
         try {
             if (!prefs.getBoolean("purged_legacy_demo_cache_v4", false)) {
                 val files = videosDir.listFiles().orEmpty()
                 for (f in files) {
-                    // Keep user's direct local device imports ("local_..."), purge old remote cache that may hold mov_bbb.mp4
                     if (f.isFile && !f.name.startsWith("local_")) {
                         f.delete()
                     }
                 }
                 prefs.edit().putBoolean("purged_legacy_demo_cache_v4", true).apply()
             }
-            // Also strip any demo video entries from saved playlist JSON
+            // Strip any demo video entries OR unverified ghost entries without a valid local file from saved playlist JSON
             val raw = prefs.getString("saved_playlist_videos_json", null)
             if (!raw.isNullOrBlank()) {
                 val arr = JSONArray(raw)
@@ -121,14 +120,18 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
                     val obj = arr.optJSONObject(i) ?: continue
                     val id = obj.optString("id")
                     val src = obj.optString("sourceUrl")
+                    val localName = obj.optString("localFileName", "$id.mp4")
                     if (isDemoVideoId(id) || isDemoOrForbiddenUrl(src)) {
                         modified = true
-                        val localName = obj.optString("localFileName")
                         if (localName.isNotBlank()) {
                             File(videosDir, localName).delete()
                         }
+                    } else if (!isRealMp4PlayableOffline(localName)) {
+                        // Ghost metadata entry whose local file does not exist -> remove so it never causes 404s
+                        modified = true
                     } else {
                         obj.put("backupUrl", "")
+                        obj.put("isVerifiedCached", true)
                         cleanArr.put(obj)
                     }
                 }
@@ -314,7 +317,8 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
                 val rawSource = v.optString("sourceUrl", "")
                 if (isDemoOrForbiddenUrl(rawSource)) continue
                 val localFileName = v.optString("localFileName", "$id.mp4")
-                val isCached = isRealMp4PlayableOffline(localFileName)
+                // Only load saved offline videos that actually have a verified playable media file on disk
+                if (!isRealMp4PlayableOffline(localFileName)) continue
                 val actualBytes = getLocalFileSizeBytes(localFileName).takeIf { it > 0L }
                     ?: v.optLong("sizeBytes", 0L)
                 list.add(
@@ -328,7 +332,7 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
                         zoneId = v.optString("zoneId", "ALL"),
                         sizeBytes = actualBytes,
                         chunkCount = v.optLong("chunkCount", max(1L, actualBytes / CHUNK_SIZE_BYTES)),
-                        isVerifiedCached = isCached,
+                        isVerifiedCached = true,
                         sortOrder = v.optLong("sortOrder", i.toLong())
                     )
                 )
@@ -347,10 +351,12 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
                 it.id.isNotBlank() &&
                     !deletedIds.contains(it.id) &&
                     !isDemoVideoId(it.id) &&
-                    !isDemoOrForbiddenUrl(it.sourceUrl)
+                    !isDemoOrForbiddenUrl(it.sourceUrl) &&
+                    isRealMp4PlayableOffline(it.localFileName)
             }
                 .distinctBy { it.id }
                 .forEachIndexed { idx, v ->
+                    val actualBytes = getLocalFileSizeBytes(v.localFileName).takeIf { it > 0L } ?: v.sizeBytes
                     val obj = JSONObject().apply {
                         put("id", v.id)
                         put("userId", v.userId)
@@ -359,9 +365,9 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
                         put("backupUrl", "")
                         put("localFileName", v.localFileName)
                         put("zoneId", v.zoneId)
-                        put("sizeBytes", v.sizeBytes)
+                        put("sizeBytes", actualBytes)
                         put("chunkCount", v.chunkCount)
-                        put("isVerifiedCached", v.isVerifiedCached)
+                        put("isVerifiedCached", true)
                         put("sortOrder", idx.toLong())
                     }
                     arr.put(obj)

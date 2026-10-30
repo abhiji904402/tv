@@ -252,23 +252,6 @@ fun TvDisplayClientScreen(
         exoPlayer.volume = if (liveState.isMuted) 0f else 1f
     }
 
-    var failedRemoteVideoIds by remember { mutableStateOf(setOf<String>()) }
-
-    // Clear failedRemoteVideoIds whenever a new Push/Upload command arrives from the Web CMS
-    LaunchedEffect(liveState.lastPushCommand) {
-        if (liveState.lastPushCommand.isNotBlank()) {
-            failedRemoteVideoIds = emptySet()
-        }
-    }
-
-    // Automatically retry any transient remote stream failures every 4 seconds (e.g. while chunks finish assembling)
-    LaunchedEffect(failedRemoteVideoIds) {
-        if (failedRemoteVideoIds.isNotEmpty()) {
-            delay(4000L)
-            failedRemoteVideoIds = emptySet()
-        }
-    }
-
     val effectiveVideos = remember(videos, allCloudVideos, forcedOfflineVideoId) {
         val cleanVideos = videos.filter { !localManager.isDemoOrForbiddenUrl(it.sourceUrl) }
         val cleanAll = allCloudVideos.filter { !localManager.isDemoOrForbiddenUrl(it.sourceUrl) }
@@ -281,22 +264,21 @@ fun TvDisplayClientScreen(
         }
     }
 
-    // Play verified local offline files first; also allow direct streaming while background caching completes
-    val playableVideos = remember(effectiveVideos, videos, allCloudVideos, chunkTelemetry.isActive, failedRemoteVideoIds) {
+    // Play ONLY verified local offline media files in ExoPlayer so ExoPlayer NEVER makes direct HTTP requests
+    // or throws HttpDataSource$InvalidResponseCodeException (404 / 403). Remote videos are downloaded & verified
+    // in the background by ChunkedStorageAndOtaManager first, then played seamlessly from local storage.
+    val playableVideos = remember(effectiveVideos, videos, allCloudVideos, chunkTelemetry.isActive) {
         effectiveVideos.filter { v ->
-            val hasLocal = localManager.isRealMp4PlayableOffline(v.localFileName)
-            val hasValidRemote = v.sourceUrl.isNotBlank() &&
-                !localManager.isDemoOrForbiddenUrl(v.sourceUrl) &&
-                !failedRemoteVideoIds.contains(v.id)
-            hasLocal || hasValidRemote
+            localManager.isRealMp4PlayableOffline(v.localFileName) &&
+                localManager.getLocalVideoUri(v.localFileName) != null
         }
     }
 
-    // Stable signature so ExoPlayer ONLY prepares when playable video URIs or push commands change
-    val playlistSignature = remember(playableVideos, chunkTelemetry.isActive) {
+    // Stable signature so ExoPlayer ONLY prepares when verified local playable video files change
+    val playlistSignature = remember(playableVideos) {
         playableVideos.joinToString("|") { v ->
-            val hasLocal = localManager.isRealMp4PlayableOffline(v.localFileName)
-            "${v.id}:${v.localFileName}:local=$hasLocal:${v.sourceUrl}"
+            val size = localManager.getLocalFileSizeBytes(v.localFileName)
+            "${v.id}:${v.localFileName}:$size"
         }
     }
 
@@ -313,12 +295,11 @@ fun TvDisplayClientScreen(
         } else {
             val concatenatingSource = ConcatenatingMediaSource()
             playableVideos.forEach { video ->
-                val playableOfflineUri = localManager.getLocalVideoUri(video.localFileName)
-                val uriToPlay = playableOfflineUri ?: Uri.parse(localManager.sanitizeStreamUrl(video.sourceUrl))
+                val playableOfflineUri = localManager.getLocalVideoUri(video.localFileName) ?: return@forEach
                 val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
                     .createMediaSource(
                         MediaItem.Builder()
-                            .setUri(uriToPlay)
+                            .setUri(playableOfflineUri)
                             .setMediaId(video.id)
                             .build()
                     )
@@ -352,13 +333,9 @@ fun TvDisplayClientScreen(
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                val activeVid = playableVideos.getOrNull(currentMediaIndex) ?: effectiveVideos.firstOrNull()
+                val activeVid = playableVideos.getOrNull(currentMediaIndex)
                 if (activeVid != null) {
-                    if (localManager.isFileVerifiedCached(activeVid.localFileName)) {
-                        localManager.deleteCachedVideoFile(activeVid.localFileName)
-                    } else {
-                        failedRemoteVideoIds = failedRemoteVideoIds + activeVid.id
-                    }
+                    localManager.deleteCachedVideoFile(activeVid.localFileName)
                     viewModel.downloadCloudVideoForOfflineView(activeVid)
                 }
             }
