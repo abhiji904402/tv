@@ -24,9 +24,12 @@
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode|density"
+            android:directBootAware="true"
             android:exported="true"
             android:launchMode="singleTask"
             android:keepScreenOn="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
             android:label="@string/app_name"
             android:theme="@style/Theme.MyApplication">
             <intent-filter>

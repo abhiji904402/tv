@@ -48,6 +48,9 @@ class SignageViewModel(
     private val _isWebCmsConnected = MutableStateFlow(false)
     val isWebCmsConnected: StateFlow<Boolean> = _isWebCmsConnected.asStateFlow()
 
+    private val _isAutoSyncEnabled = MutableStateFlow(true)
+    val isAutoSyncEnabled: StateFlow<Boolean> = _isAutoSyncEnabled.asStateFlow()
+
     private val _isPairedWithCms = MutableStateFlow(true)
     val isPairedWithCms: StateFlow<Boolean> = _isPairedWithCms.asStateFlow()
 
@@ -148,12 +151,12 @@ class SignageViewModel(
         appendLog(
             LogLevel.INFO,
             "BOOT",
-            "PulseCast Android TV Client ready. Orientation: ${_screenOrientation.value}, Video Rotate: ${_videoRotateDegrees.value}°, Scale: ${_liveState.value.scaleMode}"
+            "PulseCast Android TV ready (${initialSavedVideos.size} saved offline video(s)). Orientation: ${_screenOrientation.value}, Rotate: ${_videoRotateDegrees.value}°, Scale: ${_liveState.value.scaleMode}"
         )
         appendLog(
             LogLevel.INFO,
             "WEB_CMS",
-            "Auto-pairing & starting 2.0s real-time sync with ${_cmsServerUrl.value} (Code: ${_localPairingCode.value})"
+            "Background Auto-Pair & 2.0s Live Sync started with ${_cmsServerUrl.value} (Code: ${_localPairingCode.value})"
         )
         autoPairOnStartup()
         startRealTimeSyncLoop()
@@ -161,6 +164,70 @@ class SignageViewModel(
 
     private fun autoPairOnStartup() {
         viewModelScope.launch {
+            try {
+                vercelClient.pairDeviceWithWebCms(
+                    baseUrl = _cmsServerUrl.value,
+                    deviceId = _localDeviceId.value,
+                    pairingCode = _localPairingCode.value,
+                    deviceName = _deviceName.value,
+                    orientation = _screenOrientation.value,
+                    videoRotateDegrees = _videoRotateDegrees.value,
+                    scaleMode = _liveState.value.scaleMode,
+                    isMuted = _liveState.value.isMuted,
+                    currentVideoTitle = _currentlyPlayingTitle.value,
+                    settingsUpdatedAtMs = localSettingsUpdatedAtMs
+                ).onSuccess {
+                    _isPairedWithCms.value = true
+                    _isWebCmsConnected.value = true
+                }
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun startRealTimeSyncLoop() {
+        syncLoopJob?.cancel()
+        syncLoopJob = viewModelScope.launch {
+            var consecutiveFailures = 0
+            while (isActive) {
+                if (_isAutoSyncEnabled.value) {
+                    try {
+                        // If disconnected or after 3 failed cycles, also send a background auto-pair ping
+                        if (!_isWebCmsConnected.value && consecutiveFailures % 2 == 0) {
+                            vercelClient.pairDeviceWithWebCms(
+                                baseUrl = _cmsServerUrl.value,
+                                deviceId = _localDeviceId.value,
+                                pairingCode = _localPairingCode.value,
+                                deviceName = _deviceName.value,
+                                orientation = _screenOrientation.value,
+                                videoRotateDegrees = _videoRotateDegrees.value,
+                                scaleMode = _liveState.value.scaleMode,
+                                isMuted = _liveState.value.isMuted,
+                                currentVideoTitle = _currentlyPlayingTitle.value,
+                                settingsUpdatedAtMs = localSettingsUpdatedAtMs
+                            )
+                        }
+                        runSingleSyncCycle()
+                        if (_isWebCmsConnected.value) {
+                            consecutiveFailures = 0
+                        } else {
+                            consecutiveFailures++
+                        }
+                    } catch (t: Throwable) {
+                        consecutiveFailures++
+                        _isWebCmsConnected.value = false
+                    }
+                }
+                val delayMs = if (_isWebCmsConnected.value) 2000L else 2500L
+                delay(delayMs)
+            }
+        }
+    }
+
+    fun connectToWebCms() {
+        _isAutoSyncEnabled.value = true
+        viewModelScope.launch {
+            appendLog(LogLevel.INFO, "WEB_CMS", "Connecting & pairing live with ${_cmsServerUrl.value}...")
             vercelClient.pairDeviceWithWebCms(
                 baseUrl = _cmsServerUrl.value,
                 deviceId = _localDeviceId.value,
@@ -170,26 +237,33 @@ class SignageViewModel(
                 videoRotateDegrees = _videoRotateDegrees.value,
                 scaleMode = _liveState.value.scaleMode,
                 isMuted = _liveState.value.isMuted,
+                currentVideoTitle = _currentlyPlayingTitle.value,
                 settingsUpdatedAtMs = localSettingsUpdatedAtMs
             ).onSuccess {
                 _isPairedWithCms.value = true
                 _isWebCmsConnected.value = true
             }
+            runSingleSyncCycle()
+            showToast("✔ Connected Live to Web CMS (Green)")
         }
     }
 
-    private fun startRealTimeSyncLoop() {
-        syncLoopJob?.cancel()
-        syncLoopJob = viewModelScope.launch {
-            while (isActive) {
-                runSingleSyncCycle()
-                val delayMs = if (_isWebCmsConnected.value) 2000L else 2500L
-                delay(delayMs)
-            }
+    fun disconnectFromWebCms() {
+        _isAutoSyncEnabled.value = false
+        _isWebCmsConnected.value = false
+        viewModelScope.launch {
+            appendLog(LogLevel.WARN, "WEB_CMS", "Disconnected from Web CMS by operator. Offline playback continues non-stop.")
+            vercelClient.disconnectDeviceFromWebCms(
+                baseUrl = _cmsServerUrl.value,
+                deviceId = _localDeviceId.value,
+                pairingCode = _localPairingCode.value
+            )
+            showToast("🔌 Disconnected from Web CMS (Offline Playback Active)")
         }
     }
 
     fun forceImmediateSync() {
+        _isAutoSyncEnabled.value = true
         viewModelScope.launch {
             appendLog(LogLevel.INFO, "WEB_CMS", "Syncing now with ${_cmsServerUrl.value}...")
             runSingleSyncCycle()
@@ -198,6 +272,7 @@ class SignageViewModel(
     }
 
     fun pairNowWithWebDashboard(customPairingCode: String, customDeviceName: String, customServerUrl: String) {
+        _isAutoSyncEnabled.value = true
         viewModelScope.launch {
             val cleanUrl = localManager.setCmsServerUrl(customServerUrl)
             _cmsServerUrl.value = cleanUrl
@@ -208,6 +283,7 @@ class SignageViewModel(
                 _localPairingCode.value
             }
             _localPairingCode.value = cleanCode
+            _localDeviceId.value = "tv_$cleanCode"
 
             val cleanName = localManager.setDeviceName(customDeviceName)
             _deviceName.value = cleanName
@@ -222,13 +298,14 @@ class SignageViewModel(
                 videoRotateDegrees = _videoRotateDegrees.value,
                 scaleMode = _liveState.value.scaleMode,
                 isMuted = _liveState.value.isMuted,
+                currentVideoTitle = _currentlyPlayingTitle.value,
                 settingsUpdatedAtMs = localSettingsUpdatedAtMs
             )
             pairRes.onSuccess {
                 _isPairedWithCms.value = true
                 _isWebCmsConnected.value = true
-                appendLog(LogLevel.INFO, "PAIRING", "Real-Time Paired with Web CMS ($cleanCode)!")
-                showToast("✔ Permanently Paired with Web Dashboard ($cleanCode)!")
+                appendLog(LogLevel.INFO, "PAIRING", "Real-Time Connected & Paired with Web CMS ($cleanCode)!")
+                showToast("✔ Connected & Paired with Web Dashboard ($cleanCode)!")
             }.onFailure {
                 appendLog(LogLevel.WARN, "PAIRING", "Pair request sent; auto-syncing every 2s...")
                 showToast("Pairing Code $cleanCode active — auto-syncing every 2s")
@@ -240,12 +317,14 @@ class SignageViewModel(
     fun regenerateSixDigitPairingCode() {
         val newCode = localManager.regeneratePairingCode()
         _localPairingCode.value = newCode
+        _localDeviceId.value = "tv_$newCode"
         appendLog(LogLevel.INFO, "PAIRING", "Generated new 6-digit pairing code: $newCode")
         showToast("New 6-Digit Pairing Code: $newCode")
         pairNowWithWebDashboard(newCode, _deviceName.value, _cmsServerUrl.value)
     }
 
     private suspend fun runSingleSyncCycle() {
+        if (!_isAutoSyncEnabled.value) return
         _lastSyncCycleCount.value += 1L
         val currentVideos = _videos.value
         val verifiedCount = currentVideos.count {
@@ -354,18 +433,36 @@ class SignageViewModel(
             }
             val activeDeletedIds = localManager.getDeletedVideoIds()
 
-            // Merge remote videos FIRST so newly uploaded Web videos are at index 0, followed by saved local vault videos
+            // Merge remote videos and saved local vault videos, then normalize & sort in line (reel-1, reel-2, reel-3, reel-4...)
             val savedVaultVideos = localManager.getSavedPlaylistVideos()
             val remoteAllNormalized = payload.allCloudVideos
                 .filter { !activeDeletedIds.contains(it.id) && !localManager.isDemoOrForbiddenUrl(it.sourceUrl) }
-                .map { remoteVid ->
-                    val isCached = localManager.isRealMp4PlayableOffline(remoteVid.localFileName)
-                    val localBytes = localManager.getLocalFileSizeBytes(remoteVid.localFileName)
+                .mapIndexed { idx, remoteVid ->
+                    val reelNum = localManager.extractReelNumber(remoteVid.title)
+                        ?: localManager.extractReelNumber(remoteVid.localFileName)
+                        ?: (idx + 1)
+                    val canonicalTitle = "reel-$reelNum"
+                    val canonicalFile = localManager.canonicalReelFileName(
+                        title = canonicalTitle,
+                        localFileName = remoteVid.localFileName,
+                        videoId = remoteVid.id
+                    )
+                    val existingMatch = localManager.resolveExistingPlayableFileName(
+                        title = canonicalTitle,
+                        localFileName = remoteVid.localFileName.ifBlank { canonicalFile },
+                        videoId = remoteVid.id
+                    )
+                    val finalLocalFileName = existingMatch ?: canonicalFile
+                    val isCached = existingMatch != null
+                    val localBytes = if (isCached) localManager.getLocalFileSizeBytes(finalLocalFileName) else 0L
                     remoteVid.copy(
+                        title = canonicalTitle,
+                        localFileName = finalLocalFileName,
                         sourceUrl = localManager.sanitizeStreamUrl(remoteVid.sourceUrl),
                         backupUrl = "",
                         sizeBytes = if (localBytes > 0L) localBytes else remoteVid.sizeBytes,
-                        isVerifiedCached = isCached
+                        isVerifiedCached = isCached,
+                        sortOrder = idx.toLong()
                     )
                 }
 
@@ -384,16 +481,23 @@ class SignageViewModel(
             }
             for (sv in savedVaultVideos) {
                 if (!activeDeletedIds.contains(sv.id) && !mergedAllMap.containsKey(sv.id)) {
-                    val isCached = localManager.isRealMp4PlayableOffline(sv.localFileName)
-                    val localBytes = localManager.getLocalFileSizeBytes(sv.localFileName)
-                    mergedAllMap[sv.id] = sv.copy(
-                        backupUrl = "",
-                        sizeBytes = if (localBytes > 0L) localBytes else sv.sizeBytes,
-                        isVerifiedCached = isCached
-                    )
+                    // Also check if a remote video already has the same canonical reel filename (matched by name!)
+                    val duplicateByReelName = mergedAllMap.values.any {
+                        it.title.equals(sv.title, ignoreCase = true) ||
+                            it.localFileName.equals(sv.localFileName, ignoreCase = true)
+                    }
+                    if (!duplicateByReelName) {
+                        val isCached = localManager.isRealMp4PlayableOffline(sv.localFileName)
+                        val localBytes = localManager.getLocalFileSizeBytes(sv.localFileName)
+                        mergedAllMap[sv.id] = sv.copy(
+                            backupUrl = "",
+                            sizeBytes = if (localBytes > 0L) localBytes else sv.sizeBytes,
+                            isVerifiedCached = isCached
+                        )
+                    }
                 }
             }
-            val mergedAllList = mergedAllMap.values.toList()
+            val mergedAllList = localManager.sortAndNormalizeReelsInLine(mergedAllMap.values.toList())
             localManager.savePlaylistVideos(mergedAllList)
 
             val assignedId = payload.assignedVideoId
@@ -410,7 +514,7 @@ class SignageViewModel(
                 appendLog(
                     LogLevel.INFO,
                     "WEB_UPLOAD",
-                    "New video uploaded on Web CMS: '${brandNewRemoteVideo.title}' — syncing & playing now!"
+                    "New reel synced in line: '${brandNewRemoteVideo.title}' (${mergedActiveList.size} reels total)"
                 )
             }
 
@@ -421,7 +525,7 @@ class SignageViewModel(
                 _allCloudVideos.value = mergedAllList
             }
 
-            // Automatically pre-cache any unverified playlist video in the background in 100% original quality
+            // Automatically pre-cache any unverified playlist video in the background (ONLY once per reel!)
             triggerAutoCacheForUncachedVideos(mergedActiveList)
 
             // If another device's browser opened the Web CMS or a serverless container cold-started and is missing
@@ -463,17 +567,26 @@ class SignageViewModel(
     private fun triggerAutoCacheForUncachedVideos(activeList: List<PlaylistVideo>) {
         if (autoCachingInFlight || _chunkTelemetry.value.isActive) return
         val now = System.currentTimeMillis()
-        val nextUncached = activeList.firstOrNull { vid ->
-            if (localManager.isRealMp4PlayableOffline(vid.localFileName)) {
+        // Sort by reel number so reel-1 downloads first, then reel-2, reel-3, reel-4 in strict order
+        val orderedList = localManager.sortAndNormalizeReelsInLine(activeList)
+        val nextUncached = orderedList.firstOrNull { vid ->
+            val matchedOnDisk = localManager.resolveExistingPlayableFileName(
+                title = vid.title,
+                localFileName = vid.localFileName,
+                videoId = vid.id,
+                expectedSizeBytes = vid.sizeBytes
+            )
+            if (matchedOnDisk != null) {
                 false
             } else {
                 val failCount = failedAutoCacheCounts[vid.id] ?: 0
-                val cooldownMs = when {
-                    failCount == 0 -> 3_000L
-                    failCount == 1 -> 8_000L
-                    else -> 25_000L
+                if (failCount >= 2) {
+                    // Stop auto-downloading a remote video that failed verification twice so it never loops "Downloading..."
+                    false
+                } else {
+                    val cooldownMs = if (failCount == 0) 2_000L else 12_000L
+                    now - (lastAutoCacheAttemptMs[vid.id] ?: 0L) > cooldownMs
                 }
-                now - (lastAutoCacheAttemptMs[vid.id] ?: 0L) > cooldownMs
             }
         } ?: return
 
@@ -503,11 +616,17 @@ class SignageViewModel(
         val candidate = mergedAllList.firstOrNull { vid ->
             !vid.id.startsWith("local_") &&
                 localManager.isRealMp4PlayableOffline(vid.localFileName) &&
-                (missingServerIds.contains(vid.id) || !remoteCloudIds.contains(vid.id)) &&
-                (now - (lastReseedAttemptMs[vid.id] ?: 0L) > 10_000L)
+                missingServerIds.contains(vid.id) &&
+                (now - (lastReseedAttemptMs[vid.id] ?: 0L) > 20_000L)
         } ?: return
 
-        val localFile = java.io.File(localManager.videosDir, candidate.localFileName)
+        val resolvedFileName = localManager.resolveExistingPlayableFileName(
+            title = candidate.title,
+            localFileName = candidate.localFileName,
+            videoId = candidate.id,
+            expectedSizeBytes = candidate.sizeBytes
+        ) ?: return
+        val localFile = java.io.File(localManager.videosDir, resolvedFileName)
         if (!localFile.exists() || localFile.length() < 256L) return
 
         reseedUploadInFlight = true
@@ -744,10 +863,13 @@ class SignageViewModel(
 
     // ------------------------------------------------------------------------
     // Cloud Video "Download Offline View" & 100% Original Quality Playback
+    // Match by canonical reel name (reel-1.mp4, reel-2.mp4...) so already-downloaded
+    // reels NEVER download again!
     // ------------------------------------------------------------------------
 
     fun downloadCloudVideoForOfflineView(video: PlaylistVideo) {
         if (_chunkTelemetry.value.isActive) return
+        failedAutoCacheCounts.remove(video.id)
         viewModelScope.launch {
             downloadCloudVideoForOfflineViewInternal(video, isSilentAutoSync = false)
         }
@@ -757,7 +879,50 @@ class SignageViewModel(
         video: PlaylistVideo,
         isSilentAutoSync: Boolean
     ) {
-        val targetName = video.localFileName.ifBlank { "${video.id}.mp4" }
+        val canonicalName = localManager.canonicalReelFileName(
+            title = video.title,
+            localFileName = video.localFileName,
+            videoId = video.id
+        )
+        // Check if this reel is ALREADY downloaded on disk by matching its name/ID/size
+        val alreadyOnDiskFile = localManager.resolveExistingPlayableFileName(
+            title = video.title,
+            localFileName = video.localFileName.ifBlank { canonicalName },
+            videoId = video.id,
+            expectedSizeBytes = video.sizeBytes
+        )
+        if (alreadyOnDiskFile != null) {
+            failedAutoCacheCounts.remove(video.id)
+            val existingBytes = localManager.getLocalFileSizeBytes(alreadyOnDiskFile).takeIf { it > 0L } ?: video.sizeBytes
+            val updatedVideo = video.copy(
+                localFileName = alreadyOnDiskFile,
+                sizeBytes = existingBytes,
+                isVerifiedCached = true
+            )
+            _videos.value = localManager.sortAndNormalizeReelsInLine(
+                if (_videos.value.any { it.id == video.id }) {
+                    _videos.value.map { if (it.id == video.id) updatedVideo else it }
+                } else {
+                    _videos.value + updatedVideo
+                }
+            )
+            _allCloudVideos.value = localManager.sortAndNormalizeReelsInLine(
+                if (_allCloudVideos.value.any { it.id == video.id }) {
+                    _allCloudVideos.value.map { if (it.id == video.id) updatedVideo else it }
+                } else {
+                    _allCloudVideos.value + updatedVideo
+                }
+            )
+            localManager.savePlaylistVideos((_allCloudVideos.value + _videos.value).distinctBy { it.id })
+            if (!isSilentAutoSync) {
+                showToast("✔ '${video.title}' already downloaded & matched by name!")
+            }
+            return
+        }
+
+        val priorFailures = failedAutoCacheCounts[video.id] ?: 0
+        val showProgressToast = !isSilentAutoSync || priorFailures == 0
+        val targetName = canonicalName.ifBlank { "${video.id}.mp4" }
         if (!isSilentAutoSync) {
             appendLog(
                 LogLevel.INFO,
@@ -779,7 +944,7 @@ class SignageViewModel(
             sourceUrl = video.sourceUrl,
             targetFileName = targetName
         ) { chunk, total, bytes ->
-            if (bytes > 0L || !isSilentAutoSync) {
+            if (showProgressToast && (bytes > 0L || !isSilentAutoSync)) {
                 val pct = ((chunk.toFloat() / total.coerceAtLeast(1).toFloat()) * 100f).toInt().coerceIn(5, 99)
                 _chunkTelemetry.value = ChunkTransferTelemetry(
                     isActive = true,
@@ -803,16 +968,20 @@ class SignageViewModel(
                 chunkCount = saved.chunkCount,
                 isVerifiedCached = true
             )
-            _videos.value = if (_videos.value.any { it.id == video.id }) {
-                _videos.value.map { if (it.id == video.id) updatedVideo else it }
-            } else {
-                listOf(updatedVideo) + _videos.value
-            }
-            _allCloudVideos.value = if (_allCloudVideos.value.any { it.id == video.id }) {
-                _allCloudVideos.value.map { if (it.id == video.id) updatedVideo else it }
-            } else {
-                listOf(updatedVideo) + _allCloudVideos.value
-            }
+            _videos.value = localManager.sortAndNormalizeReelsInLine(
+                if (_videos.value.any { it.id == video.id }) {
+                    _videos.value.map { if (it.id == video.id) updatedVideo else it }
+                } else {
+                    _videos.value + updatedVideo
+                }
+            )
+            _allCloudVideos.value = localManager.sortAndNormalizeReelsInLine(
+                if (_allCloudVideos.value.any { it.id == video.id }) {
+                    _allCloudVideos.value.map { if (it.id == video.id) updatedVideo else it }
+                } else {
+                    _allCloudVideos.value + updatedVideo
+                }
+            )
             localManager.savePlaylistVideos((_allCloudVideos.value + _videos.value).distinctBy { it.id })
             appendLog(
                 LogLevel.INFO,
@@ -833,18 +1002,25 @@ class SignageViewModel(
     fun downloadAllCloudVideosOffline() {
         if (_chunkTelemetry.value.isActive) return
         viewModelScope.launch {
-            val allList = (_allCloudVideos.value + _videos.value).distinctBy { it.id }
+            val allList = localManager.sortAndNormalizeReelsInLine(
+                (_allCloudVideos.value + _videos.value).distinctBy { it.id }
+            )
             if (allList.isEmpty()) {
                 showToast("No videos in playlist yet. Upload a video in Web Dashboard or tap Add Local Video.")
                 return@launch
             }
             for (video in allList) {
-                if (!localManager.isRealMp4PlayableOffline(video.localFileName)) {
+                val matched = localManager.resolveExistingPlayableFileName(
+                    title = video.title,
+                    localFileName = video.localFileName,
+                    videoId = video.id
+                )
+                if (matched == null) {
                     downloadCloudVideoForOfflineViewInternal(video, isSilentAutoSync = true)
                 }
             }
             _chunkTelemetry.value = ChunkTransferTelemetry(isActive = false)
-            showToast("✔ All Videos Saved for Offline View!")
+            showToast("✔ All Reels Verified & Ready for Sequential Playback!")
         }
     }
 
@@ -857,7 +1033,7 @@ class SignageViewModel(
         }
         _forcedOfflineVideoId.value = video.id
         if (_videos.value.none { it.id == video.id }) {
-            _videos.value = listOf(video) + _videos.value
+            _videos.value = localManager.sortAndNormalizeReelsInLine(_videos.value + video)
         }
         if (closeAdminForFullScreen) {
             _isAdminPanelOpen.value = false
@@ -868,17 +1044,15 @@ class SignageViewModel(
 
     fun clearForcedSingleOfflineVideo() {
         _forcedOfflineVideoId.value = null
-        showToast("Looping full active playlist")
+        showToast("Looping all reels in line (reel-1, reel-2...)")
     }
 
     fun ingestLocalVideoForOfflineCache(uri: Uri, fallbackTitle: String) {
         viewModelScope.launch {
-            val (queriedName, _) = localManager.queryUriDisplayNameAndSize(uri)
-            val cleanTitle = queriedName?.substringBeforeLast('.')?.takeIf { it.isNotBlank() }
-                ?: fallbackTitle.trim().ifEmpty { "Local Video ${(10..99).random()}" }
-            val ext = queriedName?.substringAfterLast('.', "mp4")?.lowercase(Locale.US)?.takeIf { it.length in 2..4 } ?: "mp4"
-            val fileName = "local_${System.currentTimeMillis()}.$ext"
-            appendLog(LogLevel.INFO, "CACHE", "Saving '$cleanTitle' in 100% original quality to offline storage...")
+            val existingAll = (_allCloudVideos.value + _videos.value).distinctBy { it.id }
+            val autoReelTitle = localManager.computeNextSequentialReelTitle(existingAll)
+            val fileName = "$autoReelTitle.mp4"
+            appendLog(LogLevel.INFO, "CACHE", "Saving '$autoReelTitle' in 100% original quality to offline storage...")
 
             val result = localManager.ingestLocalVideoUriInChunks(
                 uri = uri,
@@ -888,7 +1062,7 @@ class SignageViewModel(
                 _chunkTelemetry.value = ChunkTransferTelemetry(
                     isActive = true,
                     videoId = fileName,
-                    label = "Saving '$cleanTitle' (Original Quality)",
+                    label = "Saving '$autoReelTitle' (Original Quality)",
                     currentChunk = chunk,
                     totalChunks = total,
                     bytesTransferred = bytes,
@@ -903,7 +1077,7 @@ class SignageViewModel(
                 val newVideo = PlaylistVideo(
                     id = vidId,
                     userId = "local_admin",
-                    title = cleanTitle,
+                    title = autoReelTitle,
                     sourceUrl = Uri.fromFile(uploaded.localFile).toString(),
                     backupUrl = "",
                     localFileName = uploaded.localFileName,
@@ -911,20 +1085,20 @@ class SignageViewModel(
                     sizeBytes = uploaded.sizeBytes,
                     chunkCount = uploaded.chunkCount,
                     isVerifiedCached = true,
-                    sortOrder = 0L
+                    sortOrder = existingAll.size.toLong()
                 )
-                val updatedVideos = listOf(newVideo) + _videos.value
-                val updatedAll = (listOf(newVideo) + _allCloudVideos.value).distinctBy { it.id }
+                val updatedVideos = localManager.sortAndNormalizeReelsInLine(_videos.value + newVideo)
+                val updatedAll = localManager.sortAndNormalizeReelsInLine((_allCloudVideos.value + newVideo).distinctBy { it.id })
                 _videos.value = updatedVideos
                 _allCloudVideos.value = updatedAll
-                _forcedOfflineVideoId.value = newVideo.id
+                _forcedOfflineVideoId.value = null
                 localManager.savePlaylistVideos(updatedAll)
                 appendLog(
                     LogLevel.INFO,
                     "CACHE",
-                    "✔ Saved '$cleanTitle' offline (${uploaded.sizeBytes / 1024} KB • 100% Original Quality)"
+                    "✔ Saved '$autoReelTitle' offline (${uploaded.sizeBytes / 1024} KB • Playing in line)"
                 )
-                showToast("✔ Saved & Playing '$cleanTitle' (${uploaded.sizeBytes / 1024} KB)!")
+                showToast("✔ Saved '$autoReelTitle' (${uploaded.sizeBytes / 1024} KB) — Playing in line!")
             }.onFailure { err ->
                 showToast("Could not read selected video: ${err.localizedMessage}")
             }

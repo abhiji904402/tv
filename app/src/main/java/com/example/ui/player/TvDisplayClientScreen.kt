@@ -129,6 +129,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.ConcatenatingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
@@ -165,6 +166,7 @@ fun TvDisplayClientScreen(
     localManager: ChunkedStorageAndOtaManager,
     cmsServerUrl: String,
     isWebCmsConnected: Boolean,
+    isAutoSyncEnabled: Boolean = true,
     isPairedWithCms: Boolean,
     deviceName: String,
     assignedVideoId: String,
@@ -192,6 +194,7 @@ fun TvDisplayClientScreen(
     var isBufferingNow by remember { mutableStateOf(false) }
     var currentMediaIndex by remember { mutableIntStateOf(0) }
     var permissionsStatus by remember { mutableStateOf(KioskPermissionHelper.checkAllPermissions(context)) }
+    var quarantinedVideoIds by remember { mutableStateOf(setOf<String>()) }
 
     // Apply system Activity screen orientation when user changes Landscape / Portrait
     LaunchedEffect(screenOrientation) {
@@ -227,24 +230,34 @@ fun TvDisplayClientScreen(
         DefaultDataSource.Factory(context, httpFactory)
     }
 
-    // Media3 ExoPlayer configured for gapless looping (ConcatenatingMediaSource + REPEAT_MODE_ALL)
+    // Media3 ExoPlayer configured with software decoder fallback & gapless looping (ConcatenatingMediaSource + REPEAT_MODE_ALL)
     val exoPlayer = remember(context) {
-        ExoPlayer.Builder(context).build().apply {
+        val renderersFactory = DefaultRenderersFactory(context)
+            .setEnableDecoderFallback(true)
+        ExoPlayer.Builder(context, renderersFactory).build().apply {
             repeatMode = Player.REPEAT_MODE_ALL
             playWhenReady = true
         }
     }
 
-    // Automatically refresh 24x7 permission states and ensure hands-free video auto-play whenever TV boots or resumes
+    // Automatically manage hardware MediaCodec across background/foreground transitions and ensure hands-free auto-play on resume
     DisposableEffect(lifecycleOwner, context, exoPlayer) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                permissionsStatus = KioskPermissionHelper.checkAllPermissions(context)
-                exoPlayer.playWhenReady = true
-                if (exoPlayer.playbackState == Player.STATE_IDLE && exoPlayer.mediaItemCount > 0) {
-                    exoPlayer.prepare()
+            when (event) {
+                Lifecycle.Event.ON_START, Lifecycle.Event.ON_RESUME -> {
+                    permissionsStatus = KioskPermissionHelper.checkAllPermissions(context)
+                    exoPlayer.playWhenReady = true
+                    if (exoPlayer.playbackState == Player.STATE_IDLE && exoPlayer.mediaItemCount > 0) {
+                        exoPlayer.prepare()
+                    }
+                    exoPlayer.play()
                 }
-                exoPlayer.play()
+                Lifecycle.Event.ON_STOP -> {
+                    // Release hardware MediaCodec cleanly when app is backgrounded so Android ResourceManager never force-kills it
+                    exoPlayer.playWhenReady = false
+                    exoPlayer.stop()
+                }
+                else -> {}
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -258,10 +271,14 @@ fun TvDisplayClientScreen(
     }
 
     val effectiveVideos = remember(videos, allCloudVideos, forcedOfflineVideoId) {
-        val cleanVideos = videos.filter { !localManager.isDemoOrForbiddenUrl(it.sourceUrl) }
-        val cleanAll = allCloudVideos.filter { !localManager.isDemoOrForbiddenUrl(it.sourceUrl) }
+        val cleanVideos = localManager.sortAndNormalizeReelsInLine(
+            videos.filter { !localManager.isDemoOrForbiddenUrl(it.sourceUrl) }
+        )
+        val cleanAll = localManager.sortAndNormalizeReelsInLine(
+            allCloudVideos.filter { !localManager.isDemoOrForbiddenUrl(it.sourceUrl) }
+        )
         if (!forcedOfflineVideoId.isNullOrBlank()) {
-            val combined = (cleanVideos + cleanAll).distinctBy { it.id }
+            val combined = localManager.sortAndNormalizeReelsInLine((cleanVideos + cleanAll).distinctBy { it.id })
             val match = combined.filter { it.id == forcedOfflineVideoId }
             if (match.isNotEmpty()) match else cleanVideos
         } else {
@@ -269,28 +286,42 @@ fun TvDisplayClientScreen(
         }
     }
 
-    // Play ONLY verified local offline media files in ExoPlayer so ExoPlayer NEVER makes direct HTTP requests
-    // or throws HttpDataSource$InvalidResponseCodeException (404 / 403). Remote videos are downloaded & verified
-    // in the background by ChunkedStorageAndOtaManager first, then played seamlessly from local storage.
-    val playableVideos = remember(effectiveVideos, videos, allCloudVideos, chunkTelemetry.isActive) {
-        effectiveVideos.filter { v ->
-            localManager.isRealMp4PlayableOffline(v.localFileName) &&
-                localManager.getLocalVideoUri(v.localFileName) != null
+    // Play ONLY verified local offline media files in ExoPlayer in strict sequential order (reel-1, reel-2, reel-3, reel-4...)
+    // so ExoPlayer NEVER makes direct HTTP requests or throws HttpDataSource$InvalidResponseCodeException (404 / 403) or ParserException.
+    val playableVideos = remember(effectiveVideos, videos, allCloudVideos, chunkTelemetry.isActive, quarantinedVideoIds) {
+        effectiveVideos
+            .filter { v ->
+                v.id !in quarantinedVideoIds &&
+                    localManager.isRealMp4PlayableOffline(v.localFileName) &&
+                    localManager.getLocalVideoUri(v.localFileName) != null
+            }
+            .sortedWith { a, b ->
+                val na = localManager.extractReelNumber(a.title)
+                    ?: localManager.extractReelNumber(a.localFileName)
+                    ?: Int.MAX_VALUE
+                val nb = localManager.extractReelNumber(b.title)
+                    ?: localManager.extractReelNumber(b.localFileName)
+                    ?: Int.MAX_VALUE
+                if (na != nb) na.compareTo(nb) else a.sortOrder.compareTo(b.sortOrder)
+            }
+    }
+
+    // Stable signature based on ordered reel IDs and resolved local filenames
+    val playlistSignature = remember(playableVideos) {
+        playableVideos.joinToString("|") { v ->
+            "${v.id}:${v.title}:${v.localFileName}"
         }
     }
 
-    // Stable signature so ExoPlayer ONLY prepares when verified local playable video files change
-    val playlistSignature = remember(playableVideos) {
-        playableVideos.joinToString("|") { v ->
-            val size = localManager.getLocalFileSizeBytes(v.localFileName)
-            "${v.id}:${v.localFileName}:$size"
-        }
-    }
+    val concatenatingSource = remember(context) { ConcatenatingMediaSource() }
+    val loadedMediaIds = remember { mutableListOf<String>() }
 
     LaunchedEffect(playlistSignature) {
         if (playableVideos.isEmpty()) {
             exoPlayer.stop()
             exoPlayer.clearMediaItems()
+            concatenatingSource.clear()
+            loadedMediaIds.clear()
             val statusTitle = if (effectiveVideos.isEmpty()) {
                 "Standby (Upload Video on Web CMS)"
             } else {
@@ -298,24 +329,77 @@ fun TvDisplayClientScreen(
             }
             viewModel.onActiveVideoChanged(statusTitle)
         } else {
-            val concatenatingSource = ConcatenatingMediaSource()
-            playableVideos.forEach { video ->
-                val playableOfflineUri = localManager.getLocalVideoUri(video.localFileName) ?: return@forEach
-                val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
-                    .createMediaSource(
-                        MediaItem.Builder()
-                            .setUri(playableOfflineUri)
-                            .setMediaId(video.id)
-                            .build()
-                    )
-                concatenatingSource.addMediaSource(mediaSource)
+            val targetIds = playableVideos.map { "${it.id}:${it.localFileName}" }
+            val isPrefixAppend = loadedMediaIds.isNotEmpty() &&
+                targetIds.size > loadedMediaIds.size &&
+                targetIds.subList(0, loadedMediaIds.size) == loadedMediaIds.toList() &&
+                exoPlayer.mediaItemCount == loadedMediaIds.size
+
+            if (isPrefixAppend) {
+                // Seamlessly append newly cached reels (e.g. reel-2, reel-3, reel-4) in line WITHOUT restarting reel-1!
+                for (i in loadedMediaIds.size until playableVideos.size) {
+                    val video = playableVideos[i]
+                    val playableOfflineUri = localManager.getLocalVideoUri(video.localFileName) ?: continue
+                    val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
+                        .createMediaSource(
+                            MediaItem.Builder()
+                                .setUri(playableOfflineUri)
+                                .setMediaId(video.id)
+                                .build()
+                        )
+                    concatenatingSource.addMediaSource(mediaSource)
+                    loadedMediaIds.add("${video.id}:${video.localFileName}")
+                }
+                if (!exoPlayer.isPlaying && exoPlayer.playbackState == Player.STATE_READY) {
+                    exoPlayer.playWhenReady = true
+                    exoPlayer.play()
+                }
+            } else if (targetIds != loadedMediaIds.toList() || exoPlayer.mediaItemCount == 0) {
+                // Preserve currently playing reel & position if it still exists in the updated sequential list
+                val currentMediaId = exoPlayer.currentMediaItem?.mediaId
+                val preservedPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+                val wasPlaying = exoPlayer.isPlaying
+
+                concatenatingSource.clear()
+                loadedMediaIds.clear()
+                playableVideos.forEach { video ->
+                    val playableOfflineUri = localManager.getLocalVideoUri(video.localFileName) ?: return@forEach
+                    val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
+                        .createMediaSource(
+                            MediaItem.Builder()
+                                .setUri(playableOfflineUri)
+                                .setMediaId(video.id)
+                                .build()
+                        )
+                    concatenatingSource.addMediaSource(mediaSource)
+                    loadedMediaIds.add("${video.id}:${video.localFileName}")
+                }
+                val newIndex = if (currentMediaId != null) {
+                    playableVideos.indexOfFirst { it.id == currentMediaId }.takeIf { it >= 0 } ?: 0
+                } else {
+                    0
+                }
+                val seekPos = if (currentMediaId != null && playableVideos.getOrNull(newIndex)?.id == currentMediaId) {
+                    preservedPositionMs
+                } else {
+                    0L
+                }
+                exoPlayer.setMediaSource(concatenatingSource, false)
+                if (newIndex in playableVideos.indices) {
+                    exoPlayer.seekTo(newIndex, seekPos)
+                }
+                if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                    exoPlayer.prepare()
+                    exoPlayer.playWhenReady = true
+                    if (wasPlaying || exoPlayer.playWhenReady) {
+                        exoPlayer.play()
+                    }
+                }
+                val activeTitle = playableVideos.getOrNull(newIndex)?.title
+                    ?: playableVideos.firstOrNull()?.title
+                    ?: "Playing"
+                viewModel.onActiveVideoChanged(activeTitle)
             }
-            exoPlayer.setMediaSource(concatenatingSource)
-            exoPlayer.prepare()
-            exoPlayer.playWhenReady = true
-            exoPlayer.play()
-            val firstTitle = playableVideos.firstOrNull()?.title ?: "Playing"
-            viewModel.onActiveVideoChanged(firstTitle)
         }
     }
 
@@ -323,7 +407,12 @@ fun TvDisplayClientScreen(
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 isBufferingNow = (playbackState == Player.STATE_BUFFERING)
+                if (!lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
                 if (playbackState == Player.STATE_READY && !exoPlayer.isPlaying) {
+                    exoPlayer.playWhenReady = true
+                    exoPlayer.play()
+                } else if (playbackState == Player.STATE_ENDED && playableVideos.isNotEmpty()) {
+                    exoPlayer.seekTo(0, 0L)
                     exoPlayer.playWhenReady = true
                     exoPlayer.play()
                 }
@@ -338,16 +427,42 @@ fun TvDisplayClientScreen(
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                val activeVid = playableVideos.getOrNull(currentMediaIndex)
+                val failedMediaId = exoPlayer.currentMediaItem?.mediaId
+                val activeVid = playableVideos.firstOrNull { it.id == failedMediaId }
+                    ?: playableVideos.getOrNull(currentMediaIndex)
                 if (activeVid != null) {
+                    // Quarantine this video ID immediately so ExoPlayer never retries a malformed NAL file in a loop
+                    quarantinedVideoIds = quarantinedVideoIds + activeVid.id
                     localManager.deleteCachedVideoFile(activeVid.localFileName)
-                    viewModel.downloadCloudVideoForOfflineView(activeVid)
                 }
             }
         }
         exoPlayer.addListener(listener)
         onDispose {
             exoPlayer.removeListener(listener)
+        }
+    }
+
+    // 24x7 Non-Stop Playback Watchdog: ensures video NEVER stops or pauses while in foreground
+    LaunchedEffect(exoPlayer, playableVideos, lifecycleOwner) {
+        while (true) {
+            delay(2500L)
+            if (playableVideos.isNotEmpty() && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                try {
+                    exoPlayer.repeatMode = Player.REPEAT_MODE_ALL
+                    exoPlayer.playWhenReady = true
+                    if (exoPlayer.playbackState == Player.STATE_IDLE && exoPlayer.mediaItemCount > 0) {
+                        exoPlayer.prepare()
+                        exoPlayer.play()
+                    } else if (exoPlayer.playbackState == Player.STATE_ENDED) {
+                        exoPlayer.seekTo(0, 0L)
+                        exoPlayer.play()
+                    } else if (exoPlayer.playbackState == Player.STATE_READY && !exoPlayer.isPlaying) {
+                        exoPlayer.play()
+                    }
+                } catch (_: Throwable) {
+                }
+            }
         }
     }
 
@@ -543,6 +658,7 @@ fun TvDisplayClientScreen(
                 },
                 cmsServerUrl = cmsServerUrl,
                 isWebCmsConnected = isWebCmsConnected,
+                isAutoSyncEnabled = isAutoSyncEnabled,
                 isPairedWithCms = isPairedWithCms,
                 deviceName = deviceName,
                 pairingCode = pairingCode,
@@ -561,6 +677,8 @@ fun TvDisplayClientScreen(
                 onPairNowWithWebDashboard = { code, name, url ->
                     viewModel.pairNowWithWebDashboard(code, name, url)
                 },
+                onConnectToWebCms = { viewModel.connectToWebCms() },
+                onDisconnectFromWebCms = { viewModel.disconnectFromWebCms() },
                 onRegeneratePairingCode = { viewModel.regenerateSixDigitPairingCode() },
                 onForceSync = { viewModel.forceImmediateSync() },
                 onSetScreenOrientation = { viewModel.setScreenOrientationMode(it) },
@@ -1256,6 +1374,7 @@ private fun AdminFullScreenHub(
     onRefreshPermissions: () -> Unit,
     cmsServerUrl: String,
     isWebCmsConnected: Boolean,
+    isAutoSyncEnabled: Boolean,
     isPairedWithCms: Boolean,
     deviceName: String,
     pairingCode: String,
@@ -1272,6 +1391,8 @@ private fun AdminFullScreenHub(
     lastSyncCycleCount: Long,
     localManager: ChunkedStorageAndOtaManager,
     onPairNowWithWebDashboard: (String, String, String) -> Unit,
+    onConnectToWebCms: () -> Unit,
+    onDisconnectFromWebCms: () -> Unit,
     onRegeneratePairingCode: () -> Unit,
     onForceSync: () -> Unit,
     onSetScreenOrientation: (String) -> Unit,
@@ -1480,10 +1601,13 @@ private fun AdminFullScreenHub(
                     1 -> AdminPairingAndSyncPage(
                         cmsServerUrl = cmsServerUrl,
                         isWebCmsConnected = isWebCmsConnected,
+                        isAutoSyncEnabled = isAutoSyncEnabled,
                         deviceName = deviceName,
                         pairingCode = pairingCode,
                         lastSyncCycleCount = lastSyncCycleCount,
                         onPairNow = onPairNowWithWebDashboard,
+                        onConnectToWebCms = onConnectToWebCms,
+                        onDisconnectFromWebCms = onDisconnectFromWebCms,
                         onRegenerateCode = onRegeneratePairingCode,
                         onForceSync = onForceSync
                     )
@@ -1818,10 +1942,13 @@ private fun AdminOrientationAndRotatePage(
 private fun AdminPairingAndSyncPage(
     cmsServerUrl: String,
     isWebCmsConnected: Boolean,
+    isAutoSyncEnabled: Boolean,
     deviceName: String,
     pairingCode: String,
     lastSyncCycleCount: Long,
     onPairNow: (String, String, String) -> Unit,
+    onConnectToWebCms: () -> Unit,
+    onDisconnectFromWebCms: () -> Unit,
     onRegenerateCode: () -> Unit,
     onForceSync: () -> Unit
 ) {
@@ -1833,55 +1960,119 @@ private fun AdminPairingAndSyncPage(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Card(
             colors = CardDefaults.cardColors(containerColor = ControlDeckSurface),
             shape = RoundedCornerShape(16.dp),
             modifier = Modifier
                 .fillMaxWidth()
-                .border(1.dp, BorderSlate, RoundedCornerShape(16.dp))
+                .border(
+                    1.5.dp,
+                    if (isWebCmsConnected) SignalGreen.copy(alpha = 0.7f) else BorderSlate,
+                    RoundedCornerShape(16.dp)
+                )
         ) {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(10.dp)
-                                .clip(CircleShape)
-                                .background(if (isWebCmsConnected) SignalGreen else Color.White)
-                        )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(12.dp)
+                                    .clip(CircleShape)
+                                    .background(if (isWebCmsConnected) SignalGreen else Color.White)
+                            )
+                            Text(
+                                text = "PAIRING CODE: ${pairingCode.chunked(3).joinToString(" ")}",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = if (isWebCmsConnected) SignalGreen else ElectricCyan,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "PAIRING CODE: ${pairingCode.chunked(3).joinToString(" ")}",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = ElectricCyan,
-                            fontWeight = FontWeight.Bold
+                            text = when {
+                                isWebCmsConnected -> "● CONNECTED & LIVE — Syncing every 2.0s (#$lastSyncCycleCount)"
+                                !isAutoSyncEnabled -> "○ DISCONNECTED BY OPERATOR — Offline Video Playback Active"
+                                else -> "○ AUTO-CONNECTING IN BACKGROUND (#$lastSyncCycleCount)..."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (isWebCmsConnected) SignalGreen else Color.White,
+                            fontWeight = FontWeight.SemiBold
                         )
                     }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = if (isWebCmsConnected) {
-                            "✔ Green Dot = Connected & Syncing Live every 2.0s (#$lastSyncCycleCount)"
-                        } else {
-                            "○ White Dot = Offline Standby — Retrying connection (#$lastSyncCycleCount)"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (isWebCmsConnected) SignalGreen else Color.White
-                    )
+                    OutlinedButton(onClick = onRegenerateCode) {
+                        Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("New Code", maxLines = 1)
+                    }
                 }
-                OutlinedButton(onClick = onRegenerateCode) {
-                    Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("New Code", maxLines = 1)
+
+                // Explicit Connect / Disconnect Controls
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    if (isWebCmsConnected || isAutoSyncEnabled) {
+                        Button(
+                            onClick = onDisconnectFromWebCms,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(46.dp)
+                                .testTag("disconnect_web_cms_button"),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = AlertCrimson.copy(alpha = 0.22f),
+                                contentColor = AlertCrimson
+                            )
+                        ) {
+                            Icon(imageVector = Icons.Default.CloudOff, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Disconnect CMS", fontWeight = FontWeight.Bold, maxLines = 1)
+                        }
+                    } else {
+                        Button(
+                            onClick = onConnectToWebCms,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(46.dp)
+                                .testTag("connect_web_cms_button"),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = SignalGreen,
+                                contentColor = ObsidianBackground
+                            )
+                        ) {
+                            Icon(imageVector = Icons.Default.CloudDone, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Connect Live (Green)", fontWeight = FontWeight.Bold, maxLines = 1)
+                        }
+                    }
+
+                    OutlinedButton(
+                        onClick = onForceSync,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(46.dp),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Sync Now", fontWeight = FontWeight.Bold, maxLines = 1)
+                    }
                 }
             }
         }
@@ -1889,7 +2080,7 @@ private fun AdminPairingAndSyncPage(
         OutlinedTextField(
             value = codeInput,
             onValueChange = { if (it.length <= 6) codeInput = it.filter { ch -> ch.isDigit() } },
-            label = { Text("6-Digit Pairing Code (Match with Web Dashboard)") },
+            label = { Text("6-Digit Pairing Code (Auto-Pairs in Background)") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
@@ -1910,36 +2101,21 @@ private fun AdminPairingAndSyncPage(
             modifier = Modifier.fillMaxWidth()
         )
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        Button(
+            onClick = { onPairNow(codeInput, nameInput, urlInput) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp)
+                .testTag("pair_with_web_cms_button"),
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = SignalGreen,
+                contentColor = ObsidianBackground
+            )
         ) {
-            Button(
-                onClick = { onPairNow(codeInput, nameInput, urlInput) },
-                modifier = Modifier
-                    .weight(1f)
-                    .height(50.dp)
-                    .testTag("pair_with_web_cms_button"),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = ElectricCyan,
-                    contentColor = ObsidianBackground
-                )
-            ) {
-                Icon(imageVector = Icons.Default.Link, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Pair & Connect Live (2s Sync)", fontWeight = FontWeight.Bold, maxLines = 1)
-            }
-
-            OutlinedButton(
-                onClick = onForceSync,
-                modifier = Modifier.height(50.dp),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Sync Now", maxLines = 1)
-            }
+            Icon(imageVector = Icons.Default.Link, contentDescription = null)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Pair & Connect Live (2s Sync)", fontWeight = FontWeight.Bold, maxLines = 1)
         }
     }
 }

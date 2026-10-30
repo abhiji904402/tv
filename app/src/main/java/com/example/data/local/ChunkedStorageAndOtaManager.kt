@@ -3,6 +3,18 @@ package com.example.data.local
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.FileDataSource
+import androidx.media3.extractor.DefaultExtractorInput
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.DiscardingTrackOutput
+import androidx.media3.extractor.Extractor
+import androidx.media3.extractor.ExtractorOutput
+import androidx.media3.extractor.PositionHolder
+import androidx.media3.extractor.SeekMap
+import androidx.media3.extractor.TrackOutput
 import com.example.data.model.PlaylistVideo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -12,6 +24,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -55,23 +68,40 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
         const val CHUNK_SIZE_BYTES = 600 * 1024 // 600KB chunks
         const val DEFAULT_CMS_SERVER_URL = "https://tv-br.vercel.app"
         private const val PREFS_NAME = "pulsecast_ota_and_device_prefs"
+        private val verifiedMediaCache = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
     }
 
-    private val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val safeContext: Context = try {
+        val appCtx = context.applicationContext ?: context
+        // Test if credential-encrypted storage is available (handles Direct Boot after sudden power outage)
+        appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        appCtx
+    } catch (_: Throwable) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+            (context.applicationContext ?: context).createDeviceProtectedStorageContext()
+        } else {
+            context.applicationContext ?: context
+        }
+    }
+
+    private val prefs = safeContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     val videosDir: File
-        get() = File(context.applicationContext.filesDir, "videos").apply {
+        get() = File(safeContext.filesDir, "videos").apply {
             if (!exists()) mkdirs()
         }
 
     val otaSlotsDir: File
-        get() = File(context.applicationContext.filesDir, "ota_slots").apply {
+        get() = File(safeContext.filesDir, "ota_slots").apply {
             if (!exists()) mkdirs()
         }
 
     init {
-        purgeLegacyDemoVideosAndCache()
-        purgeInvalidVideoFiles()
+        try {
+            purgeInvalidVideoFiles()
+            purgeLegacyDemoVideosAndCache()
+        } catch (_: Throwable) {
+        }
     }
 
     /**
@@ -110,7 +140,7 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
                 }
                 prefs.edit().putBoolean("purged_legacy_demo_cache_v4", true).apply()
             }
-            // Strip any demo video entries OR unverified ghost entries without a valid local file from saved playlist JSON
+            // Strip any demo video entries OR unverified ghost/corrupt entries without a valid local file from saved playlist JSON
             val raw = prefs.getString("saved_playlist_videos_json", null)
             if (!raw.isNullOrBlank()) {
                 val arr = JSONArray(raw)
@@ -127,7 +157,7 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
                             File(videosDir, localName).delete()
                         }
                     } else if (!isRealMp4PlayableOffline(localName)) {
-                        // Ghost metadata entry whose local file does not exist -> remove so it never causes 404s
+                        // Ghost or malformed metadata entry whose local file failed NAL verification -> remove
                         modified = true
                     } else {
                         obj.put("backupUrl", "")
@@ -139,7 +169,7 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
                     prefs.edit().putString("saved_playlist_videos_json", cleanArr.toString()).apply()
                 }
             }
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
         }
     }
 
@@ -149,11 +179,12 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
             for (file in files) {
                 if (file.isFile && !file.name.endsWith(".part")) {
                     if (!isFileValidPlayableMedia(file)) {
+                        verifiedMediaCache.keys.removeIf { it.startsWith("${file.name}:") }
                         file.delete()
                     }
                 }
             }
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
         }
     }
 
@@ -283,7 +314,7 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
                 if (id.isNotBlank()) set.add(id)
             }
             set
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             emptySet()
         }
     }
@@ -304,56 +335,240 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
         prefs.edit().putString("deleted_video_ids_json", arr.toString()).apply()
     }
 
+    // ------------------------------------------------------------------------
+    // Sequential Reel Naming (reel-1, reel-2, reel-3...) & Name-Based File Match
+    // ------------------------------------------------------------------------
+
+    fun extractReelNumber(raw: String?): Int? {
+        if (raw.isNullOrBlank()) return null
+        val cleaned = raw.trim().substringBeforeLast('.')
+        val regex = Regex("^reel[-_\\s]*(\\d+)$", RegexOption.IGNORE_CASE)
+        val match = regex.find(cleaned) ?: return null
+        val num = match.groupValues.getOrNull(1)?.toIntOrNull() ?: return null
+        return if (num > 0) num else null
+    }
+
+    fun canonicalReelFileName(title: String, localFileName: String = "", videoId: String = ""): String {
+        val cleanLocal = localFileName.trim().replace(Regex("[^a-zA-Z0-9._\\-]"), "_")
+        if (cleanLocal.isNotBlank() && cleanLocal != ".mp4") {
+            return if (cleanLocal.contains('.')) cleanLocal else "$cleanLocal.mp4"
+        }
+        val num = extractReelNumber(title) ?: extractReelNumber(localFileName)
+        if (num != null) {
+            return "reel-$num.mp4"
+        }
+        val cleanId = videoId.trim().replace(Regex("[^a-zA-Z0-9._\\-]"), "_").ifBlank { "reel-1" }
+        return "$cleanId.mp4"
+    }
+
+    fun computeNextSequentialReelTitle(existingVideos: List<PlaylistVideo>): String {
+        var maxNum = 0
+        for (v in existingVideos) {
+            val n = extractReelNumber(v.title) ?: extractReelNumber(v.localFileName) ?: 0
+            if (n > maxNum) maxNum = n
+        }
+        val diskFiles = videosDir.listFiles().orEmpty()
+        for (f in diskFiles) {
+            if (f.isFile && !f.name.endsWith(".part")) {
+                val n = extractReelNumber(f.name) ?: 0
+                if (n > maxNum) maxNum = n
+            }
+        }
+        return "reel-${maxNum + 1}"
+    }
+
+    /**
+     * Resolves an already-downloaded valid video file by matching its `localFileName`, `videoId`,
+     * or canonical reel name (`reel-1.mp4`) without ever colliding two different videos of different sizes.
+     */
+    fun resolveExistingPlayableFileName(
+        title: String,
+        localFileName: String,
+        videoId: String = "",
+        expectedSizeBytes: Long = 0L
+    ): String? {
+        val directCandidates = linkedSetOf<String>().apply {
+            if (localFileName.isNotBlank()) add(localFileName.trim())
+            if (videoId.isNotBlank()) add("${videoId.trim()}.mp4")
+        }
+        for (candidate in directCandidates) {
+            val f = File(videosDir, candidate)
+            if (f.exists() && isFileValidPlayableMedia(f)) {
+                return candidate
+            }
+        }
+
+        // Also check by canonical reel name (reel-1.mp4, reel-2.mp4...)
+        val reelNum = extractReelNumber(title) ?: extractReelNumber(localFileName)
+        if (reelNum != null) {
+            val reelCandidates = listOf("reel-$reelNum.mp4", "reel_$reelNum.mp4")
+            for (rc in reelCandidates) {
+                val f = File(videosDir, rc)
+                if (f.exists() && isFileValidPlayableMedia(f)) {
+                    if (expectedSizeBytes <= 0L || f.length() == expectedSizeBytes) {
+                        return rc
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * Normalizes all playlist videos to sequential `reel-1`, `reel-2`, `reel-3`, `reel-4` names,
+     * matches them against already-downloaded verified files on disk, and sorts them strictly in line.
+     */
+    fun sortAndNormalizeReelsInLine(videos: List<PlaylistVideo>): List<PlaylistVideo> {
+        if (videos.isEmpty()) return emptyList()
+        val distinct = videos.distinctBy { it.id }
+
+        // Sort deterministically by existing reel number (if present), then sortOrder, then id
+        val preSorted = distinct.sortedWith { a, b ->
+            val na = extractReelNumber(a.title) ?: extractReelNumber(a.localFileName) ?: Int.MAX_VALUE
+            val nb = extractReelNumber(b.title) ?: extractReelNumber(b.localFileName) ?: Int.MAX_VALUE
+            when {
+                na != nb -> na.compareTo(nb)
+                a.sortOrder != b.sortOrder -> a.sortOrder.compareTo(b.sortOrder)
+                else -> a.id.compareTo(b.id)
+            }
+        }
+
+        val assignedNumbers = mutableSetOf<Int>()
+        var nextNum = 1
+        val normalized = preSorted.map { v ->
+            val preferredNum = extractReelNumber(v.title) ?: extractReelNumber(v.localFileName)
+            val num = if (preferredNum != null && assignedNumbers.add(preferredNum)) {
+                preferredNum
+            } else {
+                while (assignedNumbers.contains(nextNum)) {
+                    nextNum++
+                }
+                assignedNumbers.add(nextNum)
+                nextNum
+            }
+            val reelTitle = "reel-$num"
+            val fallbackLocalName = v.localFileName.ifBlank { "reel-$num.mp4" }
+            val matchedFileName = resolveExistingPlayableFileName(
+                title = reelTitle,
+                localFileName = fallbackLocalName,
+                videoId = v.id,
+                expectedSizeBytes = v.sizeBytes
+            )
+            val finalFileName = matchedFileName ?: fallbackLocalName
+            val isCached = matchedFileName != null
+            val actualBytes = if (isCached) {
+                getLocalFileSizeBytes(finalFileName).takeIf { it > 0L } ?: v.sizeBytes
+            } else {
+                v.sizeBytes
+            }
+            v.copy(
+                title = reelTitle,
+                localFileName = finalFileName,
+                sizeBytes = actualBytes,
+                isVerifiedCached = isCached
+            )
+        }
+
+        return normalized
+            .sortedWith { a, b ->
+                val na = extractReelNumber(a.title) ?: Int.MAX_VALUE
+                val nb = extractReelNumber(b.title) ?: Int.MAX_VALUE
+                if (na != nb) na.compareTo(nb) else a.sortOrder.compareTo(b.sortOrder)
+            }
+            .mapIndexed { index, video ->
+                video.copy(sortOrder = index.toLong())
+            }
+    }
+
     fun getSavedPlaylistVideos(): List<PlaylistVideo> {
-        val raw = prefs.getString("saved_playlist_videos_json", null) ?: return emptyList()
         val deletedIds = getDeletedVideoIds()
-        return try {
-            val arr = JSONArray(raw)
-            val list = mutableListOf<PlaylistVideo>()
-            for (i in 0 until arr.length()) {
-                val v = arr.optJSONObject(i) ?: continue
-                val id = v.optString("id")
-                if (id.isBlank() || deletedIds.contains(id) || isDemoVideoId(id)) continue
-                val rawSource = v.optString("sourceUrl", "")
-                if (isDemoOrForbiddenUrl(rawSource)) continue
-                val localFileName = v.optString("localFileName", "$id.mp4")
-                // Only load saved offline videos that actually have a verified playable media file on disk
-                if (!isRealMp4PlayableOffline(localFileName)) continue
-                val actualBytes = getLocalFileSizeBytes(localFileName).takeIf { it > 0L }
-                    ?: v.optLong("sizeBytes", 0L)
+        val list = mutableListOf<PlaylistVideo>()
+        val knownLocalFileNames = mutableSetOf<String>()
+        try {
+            val raw = prefs.getString("saved_playlist_videos_json", null)
+            if (!raw.isNullOrBlank()) {
+                val arr = JSONArray(raw)
+                for (i in 0 until arr.length()) {
+                    val v = arr.optJSONObject(i) ?: continue
+                    val id = v.optString("id")
+                    if (id.isBlank() || deletedIds.contains(id) || isDemoVideoId(id)) continue
+                    val rawSource = v.optString("sourceUrl", "")
+                    if (isDemoOrForbiddenUrl(rawSource)) continue
+                    val rawTitle = v.optString("title", "reel-${i + 1}")
+                    val rawLocalFileName = v.optString("localFileName", "$id.mp4")
+                    val resolvedFileName = resolveExistingPlayableFileName(
+                        title = rawTitle,
+                        localFileName = rawLocalFileName,
+                        videoId = id
+                    ) ?: continue
+                    knownLocalFileNames.add(resolvedFileName)
+                    knownLocalFileNames.add(rawLocalFileName)
+                    val actualBytes = getLocalFileSizeBytes(resolvedFileName).takeIf { it > 0L }
+                        ?: v.optLong("sizeBytes", 0L)
+                    list.add(
+                        PlaylistVideo(
+                            id = id,
+                            userId = v.optString("userId", "vercel_web_cms"),
+                            title = rawTitle,
+                            sourceUrl = sanitizeStreamUrl(rawSource),
+                            backupUrl = "",
+                            localFileName = resolvedFileName,
+                            zoneId = v.optString("zoneId", "ALL"),
+                            sizeBytes = actualBytes,
+                            chunkCount = v.optLong("chunkCount", max(1L, actualBytes / CHUNK_SIZE_BYTES)),
+                            isVerifiedCached = true,
+                            sortOrder = v.optLong("sortOrder", i.toLong())
+                        )
+                    )
+                }
+            }
+            // Power-cut recovery: if there are valid .mp4 files in videosDir not yet recorded in prefs JSON
+            // (and not deleted), automatically include them so the TV plays immediately on power recovery!
+            val diskFiles = videosDir.listFiles().orEmpty()
+                .filter { it.isFile && !it.name.endsWith(".part") && !knownLocalFileNames.contains(it.name) }
+                .sortedBy { extractReelNumber(it.name) ?: Int.MAX_VALUE }
+            for (diskFile in diskFiles) {
+                val inferredId = diskFile.nameWithoutExtension
+                if (inferredId.isBlank() || deletedIds.contains(inferredId) || isDemoVideoId(inferredId)) continue
+                if (!isFileValidPlayableMedia(diskFile)) continue
+                val actualBytes = diskFile.length()
+                val reelNum = extractReelNumber(diskFile.name)
+                val title = if (reelNum != null) "reel-$reelNum" else "reel-${list.size + 1}"
                 list.add(
                     PlaylistVideo(
-                        id = id,
-                        userId = v.optString("userId", "vercel_web_cms"),
-                        title = v.optString("title", "Uploaded Video"),
-                        sourceUrl = sanitizeStreamUrl(rawSource),
+                        id = inferredId,
+                        userId = "vercel_web_cms",
+                        title = title,
+                        sourceUrl = "${getCmsServerUrl()}/api/videos/file/${inferredId.removePrefix("vid_")}",
                         backupUrl = "",
-                        localFileName = localFileName,
-                        zoneId = v.optString("zoneId", "ALL"),
+                        localFileName = diskFile.name,
+                        zoneId = "ALL",
                         sizeBytes = actualBytes,
-                        chunkCount = v.optLong("chunkCount", max(1L, actualBytes / CHUNK_SIZE_BYTES)),
+                        chunkCount = max(1L, actualBytes / CHUNK_SIZE_BYTES),
                         isVerifiedCached = true,
-                        sortOrder = v.optLong("sortOrder", i.toLong())
+                        sortOrder = list.size.toLong()
                     )
                 )
             }
-            list
-        } catch (_: Exception) {
-            emptyList()
+        } catch (_: Throwable) {
         }
+        return sortAndNormalizeReelsInLine(list)
     }
 
     fun savePlaylistVideos(videos: List<PlaylistVideo>) {
         try {
             val deletedIds = getDeletedVideoIds()
             val arr = JSONArray()
-            videos.filter {
-                it.id.isNotBlank() &&
-                    !deletedIds.contains(it.id) &&
-                    !isDemoVideoId(it.id) &&
-                    !isDemoOrForbiddenUrl(it.sourceUrl) &&
-                    isRealMp4PlayableOffline(it.localFileName)
-            }
+            val sorted = sortAndNormalizeReelsInLine(
+                videos.filter {
+                    it.id.isNotBlank() &&
+                        !deletedIds.contains(it.id) &&
+                        !isDemoVideoId(it.id) &&
+                        !isDemoOrForbiddenUrl(it.sourceUrl)
+                }
+            )
+            sorted
+                .filter { isRealMp4PlayableOffline(it.localFileName) }
                 .distinctBy { it.id }
                 .forEachIndexed { idx, v ->
                     val actualBytes = getLocalFileSizeBytes(v.localFileName).takeIf { it > 0L } ?: v.sizeBytes
@@ -373,12 +588,12 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
                     arr.put(obj)
                 }
             prefs.edit().putString("saved_playlist_videos_json", arr.toString()).apply()
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
         }
     }
 
     // ------------------------------------------------------------------------
-    // Offline Video Storage & High-Quality Media Verification (✔)
+    // Offline Video Storage & High-Quality Media3 Sample/NAL Verification (✔)
     // ------------------------------------------------------------------------
 
     fun isFileVerifiedCached(localFileName: String): Boolean {
@@ -423,52 +638,211 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
                 header[0] == 0x47.toByte()
 
             isMp4OrMov || isWebmOrMkv || isRiffOrTs
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             false
         }
     }
 
-    private fun isFileValidPlayableMedia(file: File): Boolean {
-        if (!hasValidVideoHeaderBytes(file)) return false
-        val extractor = android.media.MediaExtractor()
+    /**
+     * Validates MP4 atom boundaries AND scans every sample using Media3's actual Extractor
+     * (`Mp4Extractor`) with a `DiscardingTrackOutput` so that any malformed NAL unit
+     * (`ParserException: Invalid NAL length {contentIsMalformed=true}`) or truncated chunk
+     * is caught and rejected BEFORE ExoPlayer ever attempts to play the file.
+     */
+    @OptIn(UnstableApi::class)
+    private fun verifyContainerSamplesWithMedia3(file: File): Boolean {
+        val fileLen = file.length()
+        if (fileLen < 256L) return false
+
+        val magic4 = try {
+            val hdr = ByteArray(12)
+            FileInputStream(file).use { it.read(hdr) }
+            String(hdr, 4, 4, Charsets.US_ASCII)
+        } catch (_: Throwable) {
+            ""
+        }
+        val isMp4Family = magic4 == "ftyp" ||
+            magic4 == "moov" ||
+            magic4 == "wide" ||
+            magic4 == "mdat" ||
+            magic4 == "free" ||
+            magic4 == "skip" ||
+            magic4 == "styp"
+
+        if (isMp4Family) {
+            try {
+                RandomAccessFile(file, "r").use { raf ->
+                    var pos = 0L
+                    var hasMoov = false
+                    var hasMdat = false
+                    val typeBuf = ByteArray(4)
+                    while (pos + 8L <= fileLen) {
+                        raf.seek(pos)
+                        val size32 = raf.readInt().toLong() and 0xFFFFFFFFL
+                        raf.readFully(typeBuf)
+                        for (b in typeBuf) {
+                            val code = b.toInt() and 0xFF
+                            if (code < 0x20 || code > 0x7E) {
+                                return false
+                            }
+                        }
+                        val boxType = String(typeBuf, Charsets.US_ASCII)
+                        if (boxType == "moov" || boxType == "moof") hasMoov = true
+                        if (boxType == "mdat") hasMdat = true
+
+                        val boxSize = when (size32) {
+                            1L -> {
+                                if (pos + 16L > fileLen) return false
+                                raf.readLong()
+                            }
+                            0L -> fileLen - pos
+                            else -> size32
+                        }
+                        if (boxSize < 8L || pos + boxSize > fileLen) {
+                            return false
+                        }
+                        pos += boxSize
+                    }
+                    if (!hasMoov || !hasMdat || pos != fileLen) {
+                        return false
+                    }
+                }
+            } catch (_: Throwable) {
+                return false
+            }
+        }
+
+        val dataSource = FileDataSource()
+        var extractor: Extractor? = null
         return try {
-            extractor.setDataSource(file.absolutePath)
-            extractor.trackCount > 0 || hasValidVideoHeaderBytes(file)
-        } catch (_: Exception) {
-            hasValidVideoHeaderBytes(file)
+            val uri = Uri.fromFile(file)
+            dataSource.open(DataSpec(uri, 0L, fileLen))
+            var input = DefaultExtractorInput(dataSource, 0L, fileLen)
+
+            val extractors = DefaultExtractorsFactory().createExtractors()
+            for (candidate in extractors) {
+                try {
+                    if (candidate.sniff(input)) {
+                        extractor = candidate
+                        break
+                    }
+                } catch (_: Throwable) {
+                } finally {
+                    input.resetPeekPosition()
+                }
+            }
+            val activeExtractor = extractor ?: return false
+
+            var trackCount = 0
+            val discardingTrack = DiscardingTrackOutput()
+            val noOpOutput = object : ExtractorOutput {
+                override fun track(id: Int, type: Int): TrackOutput {
+                    trackCount++
+                    return discardingTrack
+                }
+                override fun endTracks() {}
+                override fun seekMap(seekMap: SeekMap) {}
+            }
+            activeExtractor.init(noOpOutput)
+
+            val positionHolder = PositionHolder()
+            var steps = 0
+            while (steps < 250_000) {
+                steps++
+                val result = activeExtractor.read(input, positionHolder)
+                if (result == Extractor.RESULT_END_OF_INPUT) {
+                    break
+                } else if (result == Extractor.RESULT_SEEK) {
+                    val seekTarget = positionHolder.position
+                    if (seekTarget < 0L || seekTarget > fileLen) return false
+                    try {
+                        dataSource.close()
+                    } catch (_: Throwable) {
+                    }
+                    val remaining = (fileLen - seekTarget).coerceAtLeast(0L)
+                    dataSource.open(DataSpec(uri, seekTarget, remaining))
+                    input = DefaultExtractorInput(dataSource, seekTarget, remaining)
+                }
+            }
+            trackCount > 0
+        } catch (_: Throwable) {
+            false
         } finally {
             try {
-                extractor.release()
-            } catch (_: Exception) {
+                extractor?.release()
+            } catch (_: Throwable) {
+            }
+            try {
+                dataSource.close()
+            } catch (_: Throwable) {
             }
         }
     }
 
-    fun isRealMp4PlayableOffline(localFileName: String): Boolean {
-        if (localFileName.isBlank()) return false
-        val file = File(videosDir, localFileName)
-        if (!file.exists()) return false
-        val valid = isFileValidPlayableMedia(file)
-        if (!valid) {
-            file.delete()
+    private fun isFileValidPlayableMedia(file: File): Boolean {
+        if (!file.exists() || file.length() < 256L) return false
+        val cacheKey = "${file.name}:${file.length()}:${file.lastModified()}:v2"
+        verifiedMediaCache[cacheKey]?.let { return it }
+
+        if (!hasValidVideoHeaderBytes(file)) {
+            verifiedMediaCache[cacheKey] = false
+            return false
         }
+        val valid = verifyContainerSamplesWithMedia3(file)
+        verifiedMediaCache[cacheKey] = valid
         return valid
     }
 
+    fun isRealMp4PlayableOffline(localFileName: String): Boolean {
+        if (localFileName.isBlank()) return false
+        val directFile = File(videosDir, localFileName)
+        if (directFile.exists()) {
+            val valid = isFileValidPlayableMedia(directFile)
+            if (!valid) {
+                verifiedMediaCache.keys.removeIf { it.startsWith("${directFile.name}:") }
+                directFile.delete()
+            } else {
+                return true
+            }
+        }
+        val resolved = resolveExistingPlayableFileName(
+            title = localFileName.substringBeforeLast('.'),
+            localFileName = localFileName
+        )
+        return resolved != null
+    }
+
     fun getLocalVideoUri(localFileName: String): Uri? {
-        if (!isRealMp4PlayableOffline(localFileName)) return null
-        return Uri.fromFile(File(videosDir, localFileName))
+        if (localFileName.isBlank()) return null
+        val directFile = File(videosDir, localFileName)
+        if (directFile.exists() && isFileValidPlayableMedia(directFile)) {
+            return Uri.fromFile(directFile)
+        }
+        val resolved = resolveExistingPlayableFileName(
+            title = localFileName.substringBeforeLast('.'),
+            localFileName = localFileName
+        ) ?: return null
+        return Uri.fromFile(File(videosDir, resolved))
     }
 
     fun getLocalFileSizeBytes(localFileName: String): Long {
         if (localFileName.isBlank()) return 0L
-        val file = File(videosDir, localFileName)
-        return if (file.exists() && hasValidVideoHeaderBytes(file)) file.length() else 0L
+        val directFile = File(videosDir, localFileName)
+        if (directFile.exists() && isFileValidPlayableMedia(directFile)) {
+            return directFile.length()
+        }
+        val resolved = resolveExistingPlayableFileName(
+            title = localFileName.substringBeforeLast('.'),
+            localFileName = localFileName
+        ) ?: return 0L
+        val resolvedFile = File(videosDir, resolved)
+        return if (resolvedFile.exists()) resolvedFile.length() else 0L
     }
 
     fun deleteCachedVideoFile(localFileName: String): Boolean {
         if (localFileName.isBlank()) return false
         val file = File(videosDir, localFileName)
+        verifiedMediaCache.keys.removeIf { it.startsWith("${file.name}:") }
         return if (file.exists()) file.delete() else false
     }
 

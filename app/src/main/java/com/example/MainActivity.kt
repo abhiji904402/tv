@@ -51,6 +51,20 @@ import com.example.ui.viewmodel.SignageViewModel
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        try {
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
+                setShowWhenLocked(true)
+                setTurnScreenOn(true)
+            } else {
+                @Suppress("DEPRECATION")
+                window.addFlags(
+                    android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                        android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                )
+            }
+        } catch (_: Throwable) {
+        }
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
@@ -78,6 +92,7 @@ fun PulseCastTvClientApp() {
 
     val cmsServerUrl by viewModel.cmsServerUrl.collectAsStateWithLifecycle()
     val isWebCmsConnected by viewModel.isWebCmsConnected.collectAsStateWithLifecycle()
+    val isAutoSyncEnabled by viewModel.isAutoSyncEnabled.collectAsStateWithLifecycle()
     val isPairedWithCms by viewModel.isPairedWithCms.collectAsStateWithLifecycle()
     val deviceName by viewModel.deviceName.collectAsStateWithLifecycle()
     val assignedVideoId by viewModel.assignedVideoId.collectAsStateWithLifecycle()
@@ -107,6 +122,7 @@ fun PulseCastTvClientApp() {
             localManager = localManager,
             cmsServerUrl = cmsServerUrl,
             isWebCmsConnected = isWebCmsConnected,
+            isAutoSyncEnabled = isAutoSyncEnabled,
             isPairedWithCms = isPairedWithCms,
             deviceName = deviceName,
             assignedVideoId = assignedVideoId,

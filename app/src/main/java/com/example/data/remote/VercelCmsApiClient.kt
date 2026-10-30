@@ -42,9 +42,10 @@ class VercelCmsApiClient {
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(3000, TimeUnit.MILLISECONDS)
-        .readTimeout(3000, TimeUnit.MILLISECONDS)
-        .writeTimeout(3000, TimeUnit.MILLISECONDS)
+        .connectTimeout(6000, TimeUnit.MILLISECONDS)
+        .readTimeout(8000, TimeUnit.MILLISECONDS)
+        .writeTimeout(8000, TimeUnit.MILLISECONDS)
+        .retryOnConnectionFailure(true)
         .build()
 
     private fun isDemoOrForbiddenVideo(id: String, title: String, sourceUrl: String): Boolean {
@@ -120,6 +121,8 @@ class VercelCmsApiClient {
                 put("deviceName", deviceName)
                 put("isPaired", true)
                 put("paired", true)
+                put("isOnline", true)
+                put("autoPair", true)
                 put("zoneId", "zone_lobby")
                 put("orientation", currentOrientation)
                 put("videoRotateDegrees", currentVideoRotateDegrees)
@@ -139,7 +142,9 @@ class VercelCmsApiClient {
             }
 
             val heartbeatReq = Request.Builder()
-                .url("$cleanBase/api/heartbeat")
+                .url("$cleanBase/api/heartbeat?t=${System.currentTimeMillis()}")
+                .header("Cache-Control", "no-cache, no-store")
+                .header("Connection", "close")
                 .post(bodyJson.toString().toRequestBody(jsonMediaType))
                 .build()
 
@@ -151,7 +156,9 @@ class VercelCmsApiClient {
                 }
             } ?: run {
                 val fallbackReq = Request.Builder()
-                    .url("$cleanBase/api/state")
+                    .url("$cleanBase/api/state?t=${System.currentTimeMillis()}")
+                    .header("Cache-Control", "no-cache, no-store")
+                    .header("Connection", "close")
                     .get()
                     .build()
                 httpClient.newCall(fallbackReq).execute().use { fallbackResp ->
@@ -326,13 +333,13 @@ class VercelCmsApiClient {
                     isPairedWithCms = isPaired
                 )
             )
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Result.failure(e)
         }
     }
 
     /**
-     * Explicitly pairs this Android TV client with the Web CMS Dashboard using its 6-digit code.
+     * Explicitly pairs & connects this Android TV client with the Web CMS Dashboard using its 6-digit code.
      */
     suspend fun pairDeviceWithWebCms(
         baseUrl: String,
@@ -343,6 +350,7 @@ class VercelCmsApiClient {
         videoRotateDegrees: Int,
         scaleMode: String,
         isMuted: Boolean,
+        currentVideoTitle: String = "Playing",
         settingsUpdatedAtMs: Long = System.currentTimeMillis()
     ): Result<Unit> = withContext(Dispatchers.IO) {
         try {
@@ -353,6 +361,9 @@ class VercelCmsApiClient {
                 put("code", pairingCode)
                 put("deviceName", deviceName)
                 put("isPaired", true)
+                put("isOnline", true)
+                put("autoPair", true)
+                put("currentVideoTitle", currentVideoTitle)
                 put("orientation", orientation)
                 put("videoRotateDegrees", videoRotateDegrees)
                 put("scaleMode", scaleMode)
@@ -360,14 +371,45 @@ class VercelCmsApiClient {
                 put("settingsUpdatedAtMs", settingsUpdatedAtMs)
             }
             val request = Request.Builder()
-                .url("$cleanBase/api/pair")
+                .url("$cleanBase/api/pair?t=${System.currentTimeMillis()}")
+                .header("Cache-Control", "no-cache, no-store")
+                .header("Connection", "close")
                 .post(bodyJson.toString().toRequestBody(jsonMediaType))
                 .build()
             httpClient.newCall(request).execute().use { resp ->
                 if (resp.isSuccessful) Result.success(Unit)
                 else Result.failure(IllegalStateException("HTTP ${resp.code}"))
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Explicitly notifies the Web CMS Dashboard that this Android TV client disconnected.
+     */
+    suspend fun disconnectDeviceFromWebCms(
+        baseUrl: String,
+        deviceId: String,
+        pairingCode: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val cleanBase = baseUrl.trim().trimEnd('/')
+            val bodyJson = JSONObject().apply {
+                put("deviceId", deviceId)
+                put("pairingCode", pairingCode)
+            }
+            val request = Request.Builder()
+                .url("$cleanBase/api/disconnect?t=${System.currentTimeMillis()}")
+                .header("Cache-Control", "no-cache, no-store")
+                .header("Connection", "close")
+                .post(bodyJson.toString().toRequestBody(jsonMediaType))
+                .build()
+            httpClient.newCall(request).execute().use { resp ->
+                if (resp.isSuccessful) Result.success(Unit)
+                else Result.failure(IllegalStateException("HTTP ${resp.code}"))
+            }
+        } catch (e: Throwable) {
             Result.failure(e)
         }
     }
@@ -387,13 +429,15 @@ class VercelCmsApiClient {
             }
             val request = Request.Builder()
                 .url("$cleanBase/api/device-control")
+                .header("Cache-Control", "no-cache, no-store")
+                .header("Connection", "close")
                 .post(bodyJson.toString().toRequestBody(jsonMediaType))
                 .build()
             httpClient.newCall(request).execute().use { resp ->
                 if (resp.isSuccessful) Result.success(Unit)
                 else Result.failure(IllegalStateException("HTTP ${resp.code}"))
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Result.failure(e)
         }
     }
@@ -456,7 +500,7 @@ class VercelCmsApiClient {
                 return@withContext Result.failure(IllegalStateException("Local file missing"))
             }
             val cleanBase = baseUrl.trim().trimEnd('/')
-            val chunkSize = 1500 * 1024 // 1.5MB chunks (well below Vercel 4.5MB body limit)
+            val chunkSize = 3200 * 1024 // 3.2MB atomic chunks (fits within 4MB server limit; avoids multi-chunk splitting)
             val totalBytes = localFile.length()
             val totalChunks = max(1, ceil(totalBytes.toDouble() / chunkSize.toDouble()).toInt())
             val cleanFileId = video.id.removePrefix("vid_").ifBlank { video.id }

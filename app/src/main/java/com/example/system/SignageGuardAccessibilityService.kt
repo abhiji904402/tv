@@ -14,39 +14,45 @@ import com.example.data.local.ChunkedStorageAndOtaManager
 class SignageGuardAccessibilityService : AccessibilityService() {
 
     private var lastRelaunchEpochMs: Long = 0L
+    private val localManager: ChunkedStorageAndOtaManager by lazy {
+        ChunkedStorageAndOtaManager(applicationContext)
+    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        // Ensure signage activity is running when guard connects
-        val localManager = ChunkedStorageAndOtaManager(applicationContext)
-        if (localManager.getSavedDisplaySettings().kioskLocked) {
-            bringSignageToFrontIfNeeded()
+        try {
+            if (localManager.getSavedDisplaySettings().kioskLocked) {
+                bringSignageToFrontIfNeeded()
+            }
+        } catch (_: Throwable) {
         }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event == null || event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
-        val pkg = event.packageName?.toString() ?: return
+        try {
+            if (event == null || event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+            val pkg = event.packageName?.toString() ?: return
 
-        // Ignore our own package and system permission/settings dialogs so the user can grant permissions freely
-        if (pkg == packageName ||
-            pkg.contains("settings", ignoreCase = true) ||
-            pkg.contains("permissioncontroller", ignoreCase = true) ||
-            pkg.contains("packageinstaller", ignoreCase = true) ||
-            pkg.contains("systemui", ignoreCase = true) ||
-            pkg.contains("documentsui", ignoreCase = true) ||
-            pkg.contains("photopicker", ignoreCase = true)
-        ) {
-            return
-        }
-
-        val localManager = ChunkedStorageAndOtaManager(applicationContext)
-        if (localManager.getSavedDisplaySettings().kioskLocked) {
-            val now = System.currentTimeMillis()
-            if (now - lastRelaunchEpochMs > 4000L) {
-                lastRelaunchEpochMs = now
-                bringSignageToFrontIfNeeded()
+            // Ignore our own package and system permission/settings dialogs so the user can grant permissions freely
+            if (pkg == packageName ||
+                pkg.contains("settings", ignoreCase = true) ||
+                pkg.contains("permissioncontroller", ignoreCase = true) ||
+                pkg.contains("packageinstaller", ignoreCase = true) ||
+                pkg.contains("systemui", ignoreCase = true) ||
+                pkg.contains("documentsui", ignoreCase = true) ||
+                pkg.contains("photopicker", ignoreCase = true)
+            ) {
+                return
             }
+
+            if (localManager.getSavedDisplaySettings().kioskLocked) {
+                val now = System.currentTimeMillis()
+                if (now - lastRelaunchEpochMs > 4000L) {
+                    lastRelaunchEpochMs = now
+                    bringSignageToFrontIfNeeded()
+                }
+            }
+        } catch (_: Throwable) {
         }
     }
 
@@ -60,7 +66,7 @@ class SignageGuardAccessibilityService : AccessibilityService() {
                 )
             }
             startActivity(launchIntent)
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
         }
     }
 

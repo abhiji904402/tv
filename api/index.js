@@ -107,6 +107,59 @@ function normalizeDegrees(deg) {
   return ((n % 360) + 360) % 360;
 }
 
+function extractReelNumber(str) {
+  const m = String(str || "").match(/reel[-_\s]*(\d+)/i);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+function getNextReelNumber(videos, excludeId) {
+  const used = new Set();
+  for (const v of videos || []) {
+    if (!v || (excludeId && v.id === excludeId)) continue;
+    const n = extractReelNumber(v.title) || extractReelNumber(v.localFileName);
+    if (n && n > 0) used.add(n);
+  }
+  let next = 1;
+  while (used.has(next)) next++;
+  return next;
+}
+
+function normalizeAndSortReelsInLine(videos) {
+  const list = Array.isArray(videos) ? videos.slice() : [];
+  const usedNumbers = new Set();
+  for (const v of list) {
+    const n = extractReelNumber(v.title) || extractReelNumber(v.localFileName);
+    if (n && n > 0) usedNumbers.add(n);
+  }
+  let nextNum = 1;
+  const normalized = list.map((v) => {
+    let n = extractReelNumber(v.title) || extractReelNumber(v.localFileName);
+    if (!n || n <= 0) {
+      while (usedNumbers.has(nextNum)) nextNum++;
+      n = nextNum;
+      usedNumbers.add(n);
+    }
+    const canonicalTitle = `reel-${n}`;
+    const currentLocal = String(v.localFileName || "");
+    const canonicalLocal = currentLocal || `reel-${n}.mp4`;
+    return {
+      ...v,
+      title: canonicalTitle,
+      localFileName: canonicalLocal,
+      _reelNum: n,
+    };
+  });
+  normalized.sort((a, b) => {
+    if (a._reelNum !== b._reelNum) return a._reelNum - b._reelNum;
+    return (Number(a.createdAtEpochMs) || 0) - (Number(b.createdAtEpochMs) || 0);
+  });
+  return normalized.map((v, idx) => {
+    const copy = { ...v, sortOrder: idx };
+    delete copy._reelNum;
+    return copy;
+  });
+}
+
 function readStore() {
   try {
     if (fs.existsSync(STATE_FILE)) {
@@ -115,8 +168,10 @@ function readStore() {
       const init = getInitialStore();
       const deletedSet = new Set(Array.isArray(parsed.deletedVideoIds) ? parsed.deletedVideoIds : []);
       const deletedDevSet = new Set(Array.isArray(parsed.deletedDeviceIds) ? parsed.deletedDeviceIds : []);
-      const cleanVideos = (Array.isArray(parsed.videos) ? parsed.videos : []).filter(
-        (v) => v && v.id && !deletedSet.has(v.id) && !isDemoVideoEntry(v)
+      const cleanVideos = normalizeAndSortReelsInLine(
+        (Array.isArray(parsed.videos) ? parsed.videos : []).filter(
+          (v) => v && v.id && !deletedSet.has(v.id) && !isDemoVideoEntry(v)
+        )
       );
       const cleanDevices = (Array.isArray(parsed.devices) ? parsed.devices : []).filter(
         (d) => d && !deletedDevSet.has(d.id) && !deletedDevSet.has(d.pairingCode)
@@ -232,9 +287,8 @@ function reconcileClientState(store, clientVideos, clientDeletedIds, clientDevic
         changed = true;
       }
     }
-    // Sort newest first so the most recently uploaded video is always primary
-    store.videos.sort((a, b) => (Number(b.createdAtEpochMs) || 0) - (Number(a.createdAtEpochMs) || 0));
   }
+  store.videos = normalizeAndSortReelsInLine(store.videos);
 
   // Filter out any explicitly removed devices
   const beforeDevLen = (store.devices || []).length;
@@ -259,14 +313,18 @@ function reconcileClientState(store, clientVideos, clientDeletedIds, clientDevic
       const key = cd.pairingCode || cd.id;
       if (!existingByCode.has(key)) {
         const nowSec = Math.floor(Date.now() / 1000);
+        const cdHb = Number(cd.lastHeartbeatEpochSec) || 0;
+        const isDisc = Boolean(cd.disconnectedByClient);
         const restoredDevice = {
           id: String(cd.id || `tv_${cd.pairingCode}`),
           pairingCode: String(cd.pairingCode || "000000").padStart(6, "0").slice(0, 6),
           deviceName: String(cd.deviceName || `Android TV #${cd.pairingCode}`),
           zoneId: String(cd.zoneId || "zone_lobby"),
           isPaired: true,
-          isOnline: true,
-          lastHeartbeatEpochSec: Math.max(Number(cd.lastHeartbeatEpochSec) || 0, nowSec),
+          disconnectedByClient: isDisc,
+          disconnectedAtSec: Number(cd.disconnectedAtSec) || 0,
+          lastHeartbeatEpochSec: isDisc ? 0 : cdHb,
+          isOnline: !isDisc && cdHb > 0 && nowSec - cdHb < 28,
           orientation: String(cd.orientation || "LANDSCAPE"),
           videoRotateDegrees: normalizeDegrees(cd.videoRotateDegrees || 0),
           scaleMode: String(cd.scaleMode || "FILL"),
@@ -291,12 +349,23 @@ function reconcileClientState(store, clientVideos, clientDeletedIds, clientDevic
         const existingDev = existingByCode.get(key);
         const nowSec = Math.floor(Date.now() / 1000);
         existingDev.isPaired = true;
-        existingDev.isOnline = true;
-        existingDev.lastHeartbeatEpochSec = Math.max(
-          Number(existingDev.lastHeartbeatEpochSec) || 0,
-          Number(cd.lastHeartbeatEpochSec) || 0,
-          nowSec
-        );
+        const srvHb = Number(existingDev.lastHeartbeatEpochSec) || 0;
+        const cliHb = Number(cd.lastHeartbeatEpochSec) || 0;
+        const srvDiscAt = Number(existingDev.disconnectedAtSec) || 0;
+        const cliDiscAt = Number(cd.disconnectedAtSec) || 0;
+        const maxDiscAt = Math.max(srvDiscAt, cliDiscAt);
+        const maxHb = Math.max(srvHb, cliHb);
+
+        if ((existingDev.disconnectedByClient || cd.disconnectedByClient) && maxDiscAt >= maxHb) {
+          existingDev.disconnectedByClient = true;
+          existingDev.disconnectedAtSec = maxDiscAt;
+          existingDev.lastHeartbeatEpochSec = 0;
+          existingDev.isOnline = false;
+        } else {
+          existingDev.disconnectedByClient = false;
+          existingDev.lastHeartbeatEpochSec = maxHb;
+          existingDev.isOnline = maxHb > 0 && nowSec - maxHb < 28;
+        }
         if (cd.currentVideoTitle && cd.currentVideoTitle !== "Ready" && (!existingDev.currentVideoTitle || existingDev.currentVideoTitle === "Ready")) {
           existingDev.currentVideoTitle = String(cd.currentVideoTitle);
         }
@@ -465,12 +534,15 @@ module.exports = async function handler(req, res) {
     (pathname === "/api/state" || pathname === "/api/sync" || pathname === "/api/live-state" || pathname === "/api")
   ) {
     const nowSec = Math.floor(Date.now() / 1000);
-    store.devices = (store.devices || []).map((dev) => ({
-      ...dev,
-      isPaired: true,
-      isOnline: true,
-      lastHeartbeatEpochSec: Math.max(Number(dev.lastHeartbeatEpochSec) || 0, nowSec),
-    }));
+    store.devices = (store.devices || []).map((dev) => {
+      const hb = Number(dev.lastHeartbeatEpochSec) || 0;
+      const isOnline = !dev.disconnectedByClient && hb > 0 && nowSec - hb < 28;
+      return {
+        ...dev,
+        isPaired: true,
+        isOnline,
+      };
+    });
     return sendJson(res, 200, {
       ok: true,
       serverTimeMs: Date.now(),
@@ -494,12 +566,15 @@ module.exports = async function handler(req, res) {
       writeStore(store);
     }
     const nowSec = Math.floor(Date.now() / 1000);
-    store.devices = (store.devices || []).map((dev) => ({
-      ...dev,
-      isPaired: true,
-      isOnline: true,
-      lastHeartbeatEpochSec: Math.max(Number(dev.lastHeartbeatEpochSec) || 0, nowSec),
-    }));
+    store.devices = (store.devices || []).map((dev) => {
+      const hb = Number(dev.lastHeartbeatEpochSec) || 0;
+      const isOnline = !dev.disconnectedByClient && hb > 0 && nowSec - hb < 28;
+      return {
+        ...dev,
+        isPaired: true,
+        isOnline,
+      };
+    });
     return sendJson(res, 200, {
       ok: true,
       serverTimeMs: Date.now(),
@@ -794,35 +869,54 @@ module.exports = async function handler(req, res) {
       store.deletedVideoIds = (store.deletedVideoIds || []).filter((id) => id !== vidId);
 
       const existingEntry = (store.videos || []).find((v) => v.id === vidId);
+      const reelNum =
+        extractReelNumber(title) ||
+        (existingEntry && extractReelNumber(existingEntry.title)) ||
+        extractReelNumber(safeFileName) ||
+        getNextReelNumber(store.videos, vidId);
+      const canonicalReelTitle = `reel-${reelNum}`;
+      const canonicalReelFile = `reel-${reelNum}.mp4`;
+
+      // Also save under canonical reel-N.mp4 so name-based lookup always succeeds
+      const canonicalPath = path.join(VIDEOS_DIR, canonicalReelFile);
+      if (canonicalPath !== targetPath) {
+        try {
+          fs.writeFileSync(canonicalPath, fullBuffer);
+        } catch (_) {}
+      }
+      if (fullBuffer.length <= 25 * 1024 * 1024) {
+        global.__pulsecastVideoMemoryCache.set(canonicalReelFile, fullBuffer);
+      }
+
       videoEntry = {
         id: vidId,
-        title: (title || (existingEntry && existingEntry.title) || fileName || "Uploaded Video").slice(0, 120),
-        sourceUrl: `${hostUrl}/api/videos/file/${encodeURIComponent(safeFileName)}`,
+        title: canonicalReelTitle,
+        sourceUrl: `${hostUrl}/api/videos/file/${encodeURIComponent(canonicalReelFile)}`,
         backupUrl: "",
-        localFileName: safeFileName,
+        localFileName: canonicalReelFile,
         zoneId: zoneId || store.liveState.activeZoneId || "zone_lobby",
         targetDeviceId: targetDeviceId || (existingEntry && existingEntry.targetDeviceId) || "ALL",
         sizeBytes: Number(totalFileSize) || actualBytes,
         chunkCount: totalChunksNum,
         sha256Checksum,
         isVerifiedCached: true,
-        sortOrder: 0,
+        sortOrder: reelNum - 1,
         createdAtEpochMs: isReseed && existingEntry ? existingEntry.createdAtEpochMs : nowMs,
       };
 
-      // Place newest uploaded video FIRST in playlist so all TVs & Live Preview play it immediately!
-      const remaining = (store.videos || []).filter((v) => v.id !== vidId && !isDemoVideoEntry(v));
-      store.videos = [videoEntry, ...remaining].map((v, idx) => ({ ...v, sortOrder: idx }));
+      // Keep all uploaded reels in sequential line order: reel-1 -> reel-2 -> reel-3 -> reel-4
+      const remaining = (store.videos || []).filter((v) => v.id !== vidId && v.title !== canonicalReelTitle && !isDemoVideoEntry(v));
+      store.videos = normalizeAndSortReelsInLine([...remaining, videoEntry]);
 
       if (!isReseed) {
         if (targetDeviceId && targetDeviceId !== "ALL") {
           store.devices = (store.devices || []).map((d) =>
             d.id === targetDeviceId
-              ? { ...d, assignedVideoId: videoEntry.id, lastPushCommand: `UPLOAD_PLAY_${videoEntry.id}_${nowMs}` }
+              ? { ...d, assignedVideoId: "ALL", lastPushCommand: `UPLOAD_PLAY_${videoEntry.id}_${nowMs}` }
               : d
           );
         } else {
-          // Ensure all devices play the newly uploaded playlist immediately!
+          // Ensure all devices play the full sequential playlist (reel-1, reel-2, reel-3...) in line!
           store.devices = (store.devices || []).map((d) => ({
             ...d,
             assignedVideoId: "ALL",
@@ -845,7 +939,7 @@ module.exports = async function handler(req, res) {
     });
   }
 
-  // 6. POST /api/videos — Add direct stream URL creative to playlist (placed first so it plays immediately)
+  // 6. POST /api/videos — Add direct stream URL creative to playlist (named reel-N and ordered in line)
   if (req.method === "POST" && pathname === "/api/videos") {
     const rawSourceUrl = String(body.sourceUrl || "").trim();
     if (!rawSourceUrl || isDemoOrLegacyUrl(rawSourceUrl)) {
@@ -858,36 +952,31 @@ module.exports = async function handler(req, res) {
     const targetDeviceId = body.targetDeviceId || "ALL";
     const nowMs = Date.now();
     store.deletedVideoIds = (store.deletedVideoIds || []).filter((id) => id !== vidId);
+    const reelNum = extractReelNumber(body.title) || getNextReelNumber(store.videos, vidId);
+    const canonicalReelTitle = `reel-${reelNum}`;
+    const canonicalReelFile = `reel-${reelNum}.mp4`;
     const newVideo = {
       id: vidId,
-      title: (body.title || `Broadcast Video #${store.videos.length + 1}`).slice(0, 120),
+      title: canonicalReelTitle,
       sourceUrl: rawSourceUrl,
       backupUrl: "",
-      localFileName: body.localFileName || `${vidId}.mp4`,
+      localFileName: canonicalReelFile,
       zoneId: body.zoneId || store.liveState.activeZoneId || "zone_lobby",
       targetDeviceId,
       sizeBytes: Number(body.sizeBytes) || 0,
       chunkCount: Number(body.chunkCount) || 1,
       isVerifiedCached: true,
-      sortOrder: 0,
+      sortOrder: reelNum - 1,
       createdAtEpochMs: nowMs,
     };
-    const remaining = (store.videos || []).filter((v) => v.id !== vidId && !isDemoVideoEntry(v));
-    store.videos = [newVideo, ...remaining].map((v, idx) => ({ ...v, sortOrder: idx }));
+    const remaining = (store.videos || []).filter((v) => v.id !== vidId && v.title !== canonicalReelTitle && !isDemoVideoEntry(v));
+    store.videos = normalizeAndSortReelsInLine([...remaining, newVideo]);
 
-    if (targetDeviceId && targetDeviceId !== "ALL") {
-      store.devices = store.devices.map((d) =>
-        d.id === targetDeviceId
-          ? { ...d, assignedVideoId: vidId, lastPushCommand: `ADD_VIDEO_${vidId}_${nowMs}` }
-          : d
-      );
-    } else {
-      store.devices = store.devices.map((d) => ({
-        ...d,
-        assignedVideoId: "ALL",
-        lastPushCommand: `ADD_VIDEO_${vidId}_${nowMs}`,
-      }));
-    }
+    store.devices = store.devices.map((d) => ({
+      ...d,
+      assignedVideoId: "ALL",
+      lastPushCommand: `ADD_VIDEO_${vidId}_${nowMs}`,
+    }));
     store.liveState.lastPushCommand = `ADD_VIDEO_${vidId}_${nowMs}`;
     writeStore(store);
     return sendJson(res, 200, {
@@ -924,14 +1013,37 @@ module.exports = async function handler(req, res) {
     return sendJson(res, 200, { ok: true, videos: store.videos, deletedVideoIds: store.deletedVideoIds });
   }
 
-  // 8. POST /api/pair & POST /api/heartbeat — Automatic Permanent Pairing & 2.0s Sync Loop
+  // 8a. POST /api/disconnect — Explicit disconnect from Android TV or Web CMS
+  if (req.method === "POST" && pathname === "/api/disconnect") {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const code = String(body.pairingCode || "000000").padStart(6, "0").slice(0, 6);
+    const deviceId = body.deviceId || `tv_${code}`;
+    store.devices = (store.devices || []).map((d) => {
+      if (d.id === deviceId || d.pairingCode === code) {
+        return {
+          ...d,
+          isOnline: false,
+          disconnectedByClient: true,
+          disconnectedAtSec: nowSec,
+          lastHeartbeatEpochSec: 0,
+        };
+      }
+      return d;
+    });
+    writeStore(store);
+    return sendJson(res, 200, { ok: true, devices: store.devices });
+  }
+
+  // 8b. POST /api/pair & POST /api/heartbeat — Automatic Permanent Pairing & 2.0s Sync Loop
   if (req.method === "POST" && (pathname === "/api/pair" || pathname === "/api/heartbeat")) {
     const nowSec = Math.floor(Date.now() / 1000);
     const code = String(body.pairingCode || "000000").padStart(6, "0").slice(0, 6);
     const deviceId = body.deviceId || `tv_${code}`;
-    const isPairingAction = pathname === "/api/pair";
+    const isPairingAction = pathname === "/api/pair" || Boolean(body.autoPair);
+    const fromBrowser = Boolean(body.fromBrowser);
 
-    if (isPairingAction) {
+    // Always allow an active Android TV sending pair/heartbeat to auto-register in the background
+    if (isPairingAction || !fromBrowser) {
       store.deletedDeviceIds = (store.deletedDeviceIds || []).filter(
         (id) => id !== deviceId && id !== code
       );
@@ -949,7 +1061,9 @@ module.exports = async function handler(req, res) {
 
     const clientSettingsMs = Number(body.settingsUpdatedAtMs) || 0;
     const serverDeviceSettingsMs = existing && existing.settingsUpdatedAtMs ? Number(existing.settingsUpdatedAtMs) : 0;
-    const preferClientSettings = isPairingAction || (!existing && clientSettingsMs > (Number(store.liveState.settingsUpdatedAtMs) || 0)) || (existing && clientSettingsMs > serverDeviceSettingsMs);
+    const preferClientSettings =
+      (!existing && clientSettingsMs > (Number(store.liveState.settingsUpdatedAtMs) || 0)) ||
+      (existing && clientSettingsMs > serverDeviceSettingsMs);
 
     const resolvedOrientation =
       preferClientSettings && body.orientation
@@ -983,22 +1097,28 @@ module.exports = async function handler(req, res) {
         ? Boolean(store.liveState.isMuted)
         : Boolean(body.isMuted);
 
+    const effectiveHbSec = fromBrowser
+      ? Math.max(existing ? Number(existing.lastHeartbeatEpochSec) || 0 : 0, nowSec)
+      : nowSec;
+
     const updatedDevice = {
       id: existing ? existing.id : deviceId,
       pairingCode: code,
-      deviceName: isPairingAction
-        ? body.deviceName || (existing ? existing.deviceName : `Android TV #${code}`)
-        : existing
+      deviceName: isPairingAction && body.deviceName
+        ? body.deviceName
+        : existing && existing.deviceName
         ? existing.deviceName
         : body.deviceName || `Android TV #${code}`,
-      zoneId: isPairingAction
-        ? body.zoneId || (existing ? existing.zoneId : store.liveState.activeZoneId || "zone_lobby")
-        : existing
+      zoneId: isPairingAction && body.zoneId
+        ? body.zoneId
+        : existing && existing.zoneId
         ? existing.zoneId
         : body.zoneId || "zone_lobby",
       isPaired: true,
+      disconnectedByClient: false,
+      disconnectedAtSec: 0,
       isOnline: true,
-      lastHeartbeatEpochSec: nowSec,
+      lastHeartbeatEpochSec: effectiveHbSec,
       orientation: resolvedOrientation,
       videoRotateDegrees: resolvedRotateDegrees,
       scaleMode: resolvedScaleMode,
@@ -1037,15 +1157,9 @@ module.exports = async function handler(req, res) {
       lastOtaMessage: body.lastOtaMessage || (existing ? existing.lastOtaMessage : "Slot A Verified & Healthy"),
     };
 
-    const isRemovedDevice =
-      !isPairingAction &&
-      ((store.deletedDeviceIds || []).includes(deviceId) || (store.deletedDeviceIds || []).includes(code));
-
-    if (!isRemovedDevice) {
-      store.devices = store.devices
-        .filter((d) => d.id !== updatedDevice.id && d.pairingCode !== code)
-        .concat(updatedDevice);
-    }
+    store.devices = store.devices
+      .filter((d) => d.id !== updatedDevice.id && d.pairingCode !== code)
+      .concat(updatedDevice);
     writeStore(store);
 
     const deviceVideos =
