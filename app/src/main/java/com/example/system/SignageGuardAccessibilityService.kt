@@ -2,18 +2,22 @@ package com.example.system
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import com.example.MainActivity
 import com.example.data.local.ChunkedStorageAndOtaManager
 
 /**
  * 24x7 Guard Accessibility Service.
- * Ensures the digital signage player stays active and automatically recovers to foreground
- * on boot or if accidentally exited while Kiosk Mode Lock is enabled.
+ * Ensures the digital signage player opens automatically on TV boot/power-on (Accessibility Services
+ * are exempt from Android 10+ background activity launch restrictions) and stays in foreground
+ * 24x7 when Kiosk Mode Lock is enabled.
  */
 class SignageGuardAccessibilityService : AccessibilityService() {
 
     private var lastRelaunchEpochMs: Long = 0L
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val localManager: ChunkedStorageAndOtaManager by lazy {
         ChunkedStorageAndOtaManager(applicationContext)
     }
@@ -21,9 +25,14 @@ class SignageGuardAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         try {
-            if (localManager.getSavedDisplaySettings().kioskLocked) {
-                bringSignageToFrontIfNeeded()
-            }
+            // Always launch MainActivity when the Accessibility Service starts on TV boot / power-on
+            bringSignageToFrontIfNeeded()
+            mainHandler.postDelayed({
+                try {
+                    bringSignageToFrontIfNeeded()
+                } catch (_: Throwable) {
+                }
+            }, 2500L)
         } catch (_: Throwable) {
         }
     }
@@ -47,7 +56,7 @@ class SignageGuardAccessibilityService : AccessibilityService() {
 
             if (localManager.getSavedDisplaySettings().kioskLocked) {
                 val now = System.currentTimeMillis()
-                if (now - lastRelaunchEpochMs > 4000L) {
+                if (now - lastRelaunchEpochMs > 3000L) {
                     lastRelaunchEpochMs = now
                     bringSignageToFrontIfNeeded()
                 }

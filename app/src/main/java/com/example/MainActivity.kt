@@ -51,6 +51,21 @@ import com.example.ui.viewmodel.SignageViewModel
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        applyUnattendedSignageWindowFlags()
+        enableEdgeToEdge()
+        setContent {
+            MyApplicationTheme {
+                PulseCastTvClientApp()
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        applyUnattendedSignageWindowFlags()
+    }
+
+    private fun applyUnattendedSignageWindowFlags() {
         try {
             window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
@@ -60,16 +75,15 @@ class MainActivity : ComponentActivity() {
                 @Suppress("DEPRECATION")
                 window.addFlags(
                     android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                        android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                        android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                        android.view.WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
                 )
             }
-        } catch (_: Throwable) {
-        }
-        enableEdgeToEdge()
-        setContent {
-            MyApplicationTheme {
-                PulseCastTvClientApp()
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                val km = getSystemService(android.content.Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+                km?.requestDismissKeyguard(this, null)
             }
+        } catch (_: Throwable) {
         }
     }
 }

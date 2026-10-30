@@ -266,6 +266,13 @@ fun TvDisplayClientScreen(
         }
     }
 
+    LaunchedEffect(isAdminPanelOpen) {
+        while (isAdminPanelOpen) {
+            permissionsStatus = KioskPermissionHelper.checkAllPermissions(context)
+            delay(1500L)
+        }
+    }
+
     LaunchedEffect(liveState.isMuted) {
         exoPlayer.volume = if (liveState.isMuted) 0f else 1f
     }
