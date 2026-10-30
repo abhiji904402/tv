@@ -52,12 +52,8 @@ data class OtaSlotState(
 class ChunkedStorageAndOtaManager(private val context: Context) {
 
     companion object {
-        const val CHUNK_SIZE_BYTES = 600 * 1024 // 600KB chunks as specified
+        const val CHUNK_SIZE_BYTES = 600 * 1024 // 600KB chunks
         const val DEFAULT_CMS_SERVER_URL = "https://tv-br.vercel.app"
-        const val FALLBACK_MP4_STREAM =
-            "https://www.w3schools.com/html/mov_bbb.mp4"
-        const val SECONDARY_MP4_STREAM =
-            "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"
         private const val PREFS_NAME = "pulsecast_ota_and_device_prefs"
     }
 
@@ -74,8 +70,74 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
         }
 
     init {
-        // Purge any legacy corrupt/non-video files on startup so ExoPlayer never encounters them
+        purgeLegacyDemoVideosAndCache()
         purgeInvalidVideoFiles()
+    }
+
+    /**
+     * Checks whether a URL or ID belongs to any demo/sample video so demo videos NEVER interfere.
+     */
+    fun isDemoOrForbiddenUrl(rawUrl: String): Boolean {
+        val lower = rawUrl.trim().lowercase()
+        if (lower.isBlank()) return false
+        return lower.contains("mov_bbb") ||
+            lower.contains("w3schools") ||
+            lower.contains("flower.mp4") ||
+            lower.contains("mdn.mozilla.net") ||
+            lower.contains("gtv-videos-bucket") ||
+            lower.contains("commondatastorage.googleapis.com") ||
+            lower.contains("forbigger") ||
+            lower.contains("bigbuckbunny")
+    }
+
+    private fun isDemoVideoId(id: String): Boolean {
+        val lower = id.trim().lowercase()
+        return lower.startsWith("seed_") || lower.startsWith("demo_")
+    }
+
+    /**
+     * One-time cleanup on upgrade to remove any cached files or playlist entries that were polluted
+     * by old demo fallback redirects (mov_bbb.mp4 / flower.mp4).
+     */
+    private fun purgeLegacyDemoVideosAndCache() {
+        try {
+            if (!prefs.getBoolean("purged_legacy_demo_cache_v4", false)) {
+                val files = videosDir.listFiles().orEmpty()
+                for (f in files) {
+                    // Keep user's direct local device imports ("local_..."), purge old remote cache that may hold mov_bbb.mp4
+                    if (f.isFile && !f.name.startsWith("local_")) {
+                        f.delete()
+                    }
+                }
+                prefs.edit().putBoolean("purged_legacy_demo_cache_v4", true).apply()
+            }
+            // Also strip any demo video entries from saved playlist JSON
+            val raw = prefs.getString("saved_playlist_videos_json", null)
+            if (!raw.isNullOrBlank()) {
+                val arr = JSONArray(raw)
+                val cleanArr = JSONArray()
+                var modified = false
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val id = obj.optString("id")
+                    val src = obj.optString("sourceUrl")
+                    if (isDemoVideoId(id) || isDemoOrForbiddenUrl(src)) {
+                        modified = true
+                        val localName = obj.optString("localFileName")
+                        if (localName.isNotBlank()) {
+                            File(videosDir, localName).delete()
+                        }
+                    } else {
+                        obj.put("backupUrl", "")
+                        cleanArr.put(obj)
+                    }
+                }
+                if (modified) {
+                    prefs.edit().putString("saved_playlist_videos_json", cleanArr.toString()).apply()
+                }
+            }
+        } catch (_: Exception) {
+        }
     }
 
     fun purgeInvalidVideoFiles() {
@@ -106,7 +168,8 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
     fun getOrCreateDeviceId(): String {
         val existing = prefs.getString("device_id", null)
         if (!existing.isNullOrBlank()) return existing
-        val generated = "tv_${(100000..999999).random()}"
+        val code = getOrCreatePairingCode()
+        val generated = "tv_$code"
         prefs.edit().putString("device_id", generated).apply()
         return generated
     }
@@ -121,8 +184,20 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
 
     fun setCustomPairingCode(code: String): String {
         val digits = code.filter { it.isDigit() }.take(6).padStart(6, '0')
-        prefs.edit().putString("pairing_code", digits).apply()
+        prefs.edit()
+            .putString("pairing_code", digits)
+            .putString("device_id", "tv_$digits")
+            .putBoolean("is_permanently_paired", true)
+            .apply()
         return digits
+    }
+
+    fun isDevicePermanentlyPaired(): Boolean {
+        return prefs.getBoolean("is_permanently_paired", true)
+    }
+
+    fun setDevicePermanentlyPaired(paired: Boolean) {
+        prefs.edit().putBoolean("is_permanently_paired", paired).apply()
     }
 
     fun getOrCreateDeviceName(): String {
@@ -142,7 +217,11 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
 
     fun regeneratePairingCode(): String {
         val generated = (100000..999999).random().toString()
-        prefs.edit().putString("pairing_code", generated).apply()
+        prefs.edit()
+            .putString("pairing_code", generated)
+            .putString("device_id", "tv_$generated")
+            .putBoolean("is_permanently_paired", true)
+            .apply()
         return generated
     }
 
@@ -188,8 +267,7 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
     }
 
     // ------------------------------------------------------------------------
-    // Permanent Playlist & Deleted Video Tombstone Vault
-    // Ensures videos NEVER disappear until the user explicitly deletes them
+    // Permanent Playlist & Deleted Video Tombstone Vault (Zero Demo Videos)
     // ------------------------------------------------------------------------
 
     fun getDeletedVideoIds(): Set<String> {
@@ -232,18 +310,20 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
             for (i in 0 until arr.length()) {
                 val v = arr.optJSONObject(i) ?: continue
                 val id = v.optString("id")
-                if (id.isBlank() || deletedIds.contains(id)) continue
+                if (id.isBlank() || deletedIds.contains(id) || isDemoVideoId(id)) continue
+                val rawSource = v.optString("sourceUrl", "")
+                if (isDemoOrForbiddenUrl(rawSource)) continue
                 val localFileName = v.optString("localFileName", "$id.mp4")
                 val isCached = isRealMp4PlayableOffline(localFileName)
                 val actualBytes = getLocalFileSizeBytes(localFileName).takeIf { it > 0L }
-                    ?: v.optLong("sizeBytes", 1843200L)
+                    ?: v.optLong("sizeBytes", 0L)
                 list.add(
                     PlaylistVideo(
                         id = id,
                         userId = v.optString("userId", "vercel_web_cms"),
-                        title = v.optString("title", "Saved Video"),
-                        sourceUrl = sanitizeStreamUrl(v.optString("sourceUrl", FALLBACK_MP4_STREAM)),
-                        backupUrl = sanitizeStreamUrl(v.optString("backupUrl", FALLBACK_MP4_STREAM)),
+                        title = v.optString("title", "Uploaded Video"),
+                        sourceUrl = sanitizeStreamUrl(rawSource),
+                        backupUrl = "",
                         localFileName = localFileName,
                         zoneId = v.optString("zoneId", "ALL"),
                         sizeBytes = actualBytes,
@@ -263,15 +343,20 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
         try {
             val deletedIds = getDeletedVideoIds()
             val arr = JSONArray()
-            videos.filter { it.id.isNotBlank() && !deletedIds.contains(it.id) }
+            videos.filter {
+                it.id.isNotBlank() &&
+                    !deletedIds.contains(it.id) &&
+                    !isDemoVideoId(it.id) &&
+                    !isDemoOrForbiddenUrl(it.sourceUrl)
+            }
                 .distinctBy { it.id }
                 .forEachIndexed { idx, v ->
                     val obj = JSONObject().apply {
                         put("id", v.id)
                         put("userId", v.userId)
                         put("title", v.title)
-                        put("sourceUrl", v.sourceUrl)
-                        put("backupUrl", v.backupUrl)
+                        put("sourceUrl", sanitizeStreamUrl(v.sourceUrl))
+                        put("backupUrl", "")
                         put("localFileName", v.localFileName)
                         put("zoneId", v.zoneId)
                         put("sizeBytes", v.sizeBytes)
@@ -301,7 +386,6 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
             val read = FileInputStream(file).use { it.read(header) }
             if (read < 12) return false
 
-            // Reject HTML / JSON / XML text responses masquerading as .mp4
             val prefixAscii = String(header, 0, minOf(read, 24), Charsets.US_ASCII).trimStart().lowercase()
             if (prefixAscii.startsWith("<!doctype") ||
                 prefixAscii.startsWith("<html") ||
@@ -313,7 +397,6 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
                 return false
             }
 
-            // Standard ISO Base Media / MP4 / QuickTime MOV atoms at bytes 4..7
             val magic4 = String(header, 4, 4, Charsets.US_ASCII)
             val isMp4OrMov = magic4 == "ftyp" ||
                 magic4 == "moov" ||
@@ -324,13 +407,11 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
                 magic4 == "pnot" ||
                 magic4 == "styp"
 
-            // WebM / Matroska (MKV) EBML header (0x1A 0x45 0xDF 0xA3)
             val isWebmOrMkv = header[0] == 0x1A.toByte() &&
                 header[1] == 0x45.toByte() &&
                 header[2] == 0xDF.toByte() &&
                 header[3] == 0xA3.toByte()
 
-            // AVI ('RIFF'), MPEG-TS (0x47 sync byte), or Ogg ('OggS')
             val isRiffOrTs = String(header, 0, 4, Charsets.US_ASCII) == "RIFF" ||
                 String(header, 0, 4, Charsets.US_ASCII) == "OggS" ||
                 header[0] == 0x47.toByte()
@@ -348,7 +429,6 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
             extractor.setDataSource(file.absolutePath)
             extractor.trackCount > 0 || hasValidVideoHeaderBytes(file)
         } catch (_: Exception) {
-            // In Robolectric or custom codec containers, rely on verified container header bytes
             hasValidVideoHeaderBytes(file)
         } finally {
             try {
@@ -358,10 +438,6 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
         }
     }
 
-    /**
-     * Checks whether the cached file is a valid video container that ExoPlayer can play
-     * directly from local storage in 100% original quality.
-     */
     fun isRealMp4PlayableOffline(localFileName: String): Boolean {
         if (localFileName.isBlank()) return false
         val file = File(videosDir, localFileName)
@@ -391,12 +467,12 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
     }
 
     /**
-     * Sanitizes any legacy 403 URL (such as commondatastorage.googleapis.com) into a working MP4 stream.
+     * Returns empty string for any forbidden/demo video URL so ONLY user-uploaded videos are used.
      */
     fun sanitizeStreamUrl(rawUrl: String): String {
         val trimmed = rawUrl.trim()
-        if (trimmed.isBlank() || trimmed.contains("commondatastorage.googleapis.com", ignoreCase = true)) {
-            return FALLBACK_MP4_STREAM
+        if (trimmed.isBlank() || isDemoOrForbiddenUrl(trimmed)) {
+            return ""
         }
         return trimmed
     }
@@ -420,7 +496,6 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
 
     /**
      * Ingests a local content Uri in 100% original lossless quality into persistent local storage (filesDir/videos).
-     * Never compresses, never truncates, and never replaces with a low-quality fallback stream.
      */
     suspend fun ingestLocalVideoUriInChunks(
         uri: Uri,
@@ -434,7 +509,7 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
             val tempFile = File(videosDir, "$safeFileName.part")
             val destFile = File(videosDir, safeFileName)
             val digest = MessageDigest.getInstance("SHA-256")
-            val buffer = ByteArray(256 * 1024) // Fast 256KB direct stream buffer
+            val buffer = ByteArray(256 * 1024)
             var totalBytes = 0L
             var lastReportedChunk = 0
 
@@ -487,14 +562,20 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
     }
 
     /**
-     * Downloads a full Cloud video into persistent app storage (filesDir/videos) with 100% original size & quality
-     * (no 50MB truncation, no compression) and validates its header before saving.
+     * Downloads the user's uploaded Cloud video into persistent app storage (filesDir/videos)
+     * in 100% original size & quality. NEVER falls back to any demo video!
+     * Retries up to 4 rapid attempts if a serverless container is still syncing the file.
      */
     suspend fun syncRemoteVideoToLocalCache(
         sourceUrl: String,
         targetFileName: String,
         onProgress: (currentChunk: Int, totalChunks: Int, bytesWritten: Long) -> Unit
     ): Result<ChunkUploadResult> = withContext(Dispatchers.IO) {
+        val cleanUrl = sanitizeStreamUrl(sourceUrl)
+        if (cleanUrl.isBlank()) {
+            return@withContext Result.failure(IllegalStateException("Invalid or empty video source URL"))
+        }
+
         val safeFileName = targetFileName.replace(Regex("[^a-zA-Z0-9._\\-]"), "_")
             .ifEmpty { "synced_${System.currentTimeMillis()}.mp4" }
         val tempFile = File(videosDir, "$safeFileName.part")
@@ -515,21 +596,23 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
             )
         }
 
-        val candidateUrls = listOfNotNull(
-            sanitizeStreamUrl(sourceUrl).takeIf { it.isNotBlank() },
-            FALLBACK_MP4_STREAM,
-            SECONDARY_MP4_STREAM
-        ).distinct()
-
-        for (candidate in candidateUrls) {
+        // Try up to 4 rapid attempts so if Vercel routes to a cold instance, we hit the warm instance
+        for (attempt in 1..4) {
             try {
                 if (tempFile.exists()) tempFile.delete()
-                val url = URL(candidate)
+                val attemptUrl = if (attempt == 1) {
+                    cleanUrl
+                } else {
+                    val sep = if (cleanUrl.contains("?")) "&" else "?"
+                    "${cleanUrl}${sep}_syncAttempt=$attempt&t=${System.currentTimeMillis()}"
+                }
+                val url = URL(attemptUrl)
                 val connection = (url.openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 12000
+                    connectTimeout = 10000
                     readTimeout = 25000
                     instanceFollowRedirects = true
                     requestMethod = "GET"
+                    setRequestProperty("Cache-Control", "no-cache")
                     setRequestProperty(
                         "User-Agent",
                         "Mozilla/5.0 (Linux; Android 14; SignageTV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -537,22 +620,26 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
                 }
                 connection.connect()
                 val finalUrlStr = connection.url?.toString().orEmpty()
-                if (finalUrlStr.contains("commondatastorage.googleapis.com", ignoreCase = true)) {
+                // Reject if the server redirected to a demo video!
+                if (isDemoOrForbiddenUrl(finalUrlStr)) {
                     connection.disconnect()
-                    continue
+                    return@withContext Result.failure(
+                        IllegalStateException("Server redirected to demo video — awaiting real uploaded file")
+                    )
                 }
 
                 if (connection.responseCode in 200..299) {
                     val contentType = connection.contentType?.lowercase().orEmpty()
                     if (contentType.contains("text/html") || contentType.contains("application/json")) {
                         connection.disconnect()
+                        if (attempt < 4) delay(750L)
                         continue
                     }
 
                     val contentLength = connection.contentLengthLong.coerceAtLeast(CHUNK_SIZE_BYTES.toLong())
                     val totalChunks = max(1, ceil(contentLength.toDouble() / CHUNK_SIZE_BYTES).toInt())
                     val digest = MessageDigest.getInstance("SHA-256")
-                    val buffer = ByteArray(256 * 1024) // 256KB buffer for high-speed lossless download
+                    val buffer = ByteArray(256 * 1024)
                     var totalBytes = 0L
                     var lastReportedChunk = 0
 
@@ -572,7 +659,6 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
                         }
                     }
 
-                    // Verify the downloaded file actually has a valid video container header before committing
                     if (totalBytes > 512L && isFileValidPlayableMedia(tempFile)) {
                         if (destFile.exists()) destFile.delete()
                         tempFile.renameTo(destFile)
@@ -591,13 +677,18 @@ class ChunkedStorageAndOtaManager(private val context: Context) {
                     } else {
                         tempFile.delete()
                     }
+                } else {
+                    connection.disconnect()
                 }
             } catch (_: Exception) {
                 tempFile.delete()
             }
+            if (attempt < 4) {
+                delay(750L)
+            }
         }
 
-        Result.failure(IllegalStateException("Video stream is currently syncing"))
+        Result.failure(IllegalStateException("Awaiting uploaded video binary from Web CMS"))
     }
 
     // ------------------------------------------------------------------------

@@ -188,19 +188,6 @@ fun TvDisplayClientScreen(
     var currentMediaIndex by remember { mutableIntStateOf(0) }
     var permissionsStatus by remember { mutableStateOf(KioskPermissionHelper.checkAllPermissions(context)) }
 
-    // Automatically refresh 24x7 permission states whenever user returns from system settings popups
-    DisposableEffect(lifecycleOwner, context) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                permissionsStatus = KioskPermissionHelper.checkAllPermissions(context)
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
-    }
-
     // Apply system Activity screen orientation when user changes Landscape / Portrait
     LaunchedEffect(screenOrientation) {
         val activity = context as? Activity ?: return@LaunchedEffect
@@ -243,19 +230,54 @@ fun TvDisplayClientScreen(
         }
     }
 
+    // Automatically refresh 24x7 permission states and ensure hands-free video auto-play whenever TV boots or resumes
+    DisposableEffect(lifecycleOwner, context, exoPlayer) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                permissionsStatus = KioskPermissionHelper.checkAllPermissions(context)
+                exoPlayer.playWhenReady = true
+                if (exoPlayer.playbackState == Player.STATE_IDLE && exoPlayer.mediaItemCount > 0) {
+                    exoPlayer.prepare()
+                }
+                exoPlayer.play()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
     LaunchedEffect(liveState.isMuted) {
         exoPlayer.volume = if (liveState.isMuted) 0f else 1f
     }
 
     var failedRemoteVideoIds by remember { mutableStateOf(setOf<String>()) }
 
+    // Clear failedRemoteVideoIds whenever a new Push/Upload command arrives from the Web CMS
+    LaunchedEffect(liveState.lastPushCommand) {
+        if (liveState.lastPushCommand.isNotBlank()) {
+            failedRemoteVideoIds = emptySet()
+        }
+    }
+
+    // Automatically retry any transient remote stream failures every 4 seconds (e.g. while chunks finish assembling)
+    LaunchedEffect(failedRemoteVideoIds) {
+        if (failedRemoteVideoIds.isNotEmpty()) {
+            delay(4000L)
+            failedRemoteVideoIds = emptySet()
+        }
+    }
+
     val effectiveVideos = remember(videos, allCloudVideos, forcedOfflineVideoId) {
+        val cleanVideos = videos.filter { !localManager.isDemoOrForbiddenUrl(it.sourceUrl) }
+        val cleanAll = allCloudVideos.filter { !localManager.isDemoOrForbiddenUrl(it.sourceUrl) }
         if (!forcedOfflineVideoId.isNullOrBlank()) {
-            val combined = (videos + allCloudVideos).distinctBy { it.id }
+            val combined = (cleanVideos + cleanAll).distinctBy { it.id }
             val match = combined.filter { it.id == forcedOfflineVideoId }
-            if (match.isNotEmpty()) match else videos
+            if (match.isNotEmpty()) match else cleanVideos
         } else {
-            videos
+            cleanVideos
         }
     }
 
@@ -264,13 +286,13 @@ fun TvDisplayClientScreen(
         effectiveVideos.filter { v ->
             val hasLocal = localManager.isRealMp4PlayableOffline(v.localFileName)
             val hasValidRemote = v.sourceUrl.isNotBlank() &&
-                !v.sourceUrl.contains("commondatastorage.googleapis.com", ignoreCase = true) &&
+                !localManager.isDemoOrForbiddenUrl(v.sourceUrl) &&
                 !failedRemoteVideoIds.contains(v.id)
             hasLocal || hasValidRemote
         }
     }
 
-    // Stable signature so ExoPlayer ONLY prepares when playable video URIs change
+    // Stable signature so ExoPlayer ONLY prepares when playable video URIs or push commands change
     val playlistSignature = remember(playableVideos, chunkTelemetry.isActive) {
         playableVideos.joinToString("|") { v ->
             val hasLocal = localManager.isRealMp4PlayableOffline(v.localFileName)
@@ -283,9 +305,9 @@ fun TvDisplayClientScreen(
             exoPlayer.stop()
             exoPlayer.clearMediaItems()
             val statusTitle = if (effectiveVideos.isEmpty()) {
-                "Standby (Empty Playlist)"
+                "Standby (Upload Video on Web CMS)"
             } else {
-                "Caching: ${effectiveVideos.first().title}"
+                "Syncing Video: ${effectiveVideos.first().title}"
             }
             viewModel.onActiveVideoChanged(statusTitle)
         } else {
@@ -305,6 +327,7 @@ fun TvDisplayClientScreen(
             exoPlayer.setMediaSource(concatenatingSource)
             exoPlayer.prepare()
             exoPlayer.playWhenReady = true
+            exoPlayer.play()
             val firstTitle = playableVideos.firstOrNull()?.title ?: "Playing"
             viewModel.onActiveVideoChanged(firstTitle)
         }
@@ -314,6 +337,10 @@ fun TvDisplayClientScreen(
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 isBufferingNow = (playbackState == Player.STATE_BUFFERING)
+                if (playbackState == Player.STATE_READY && !exoPlayer.isPlaying) {
+                    exoPlayer.playWhenReady = true
+                    exoPlayer.play()
+                }
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {

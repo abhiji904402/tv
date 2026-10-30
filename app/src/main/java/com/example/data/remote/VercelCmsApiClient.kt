@@ -41,6 +41,24 @@ class VercelCmsApiClient {
         .writeTimeout(3000, TimeUnit.MILLISECONDS)
         .build()
 
+    private fun isDemoOrForbiddenVideo(id: String, title: String, sourceUrl: String): Boolean {
+        val u = sourceUrl.lowercase()
+        val t = title.lowercase()
+        val i = id.lowercase()
+        return u.contains("w3schools.com/html/mov_bbb.mp4") ||
+            u.contains("mov_bbb.mp4") ||
+            u.contains("mdn.mozilla.net/media/cc0-videos/flower.mp4") ||
+            u.contains("flower.mp4") ||
+            u.contains("commondatastorage.googleapis.com") ||
+            u.contains("forbiggerblazes") ||
+            u.contains("forbiggerescapes") ||
+            u.contains("bigbuckbunny") ||
+            i == "vid_lobby_1" ||
+            i == "vid_retail_2" ||
+            t.contains("welcome lobby loop") ||
+            t.contains("retail promo reel")
+    }
+
     suspend fun syncHeartbeatWithWebCms(
         baseUrl: String,
         deviceId: String,
@@ -62,14 +80,18 @@ class VercelCmsApiClient {
 
             val clientVideosArr = JSONArray()
             knownClientVideos
-                .filter { !it.id.startsWith("local_") && !deletedVideoIds.contains(it.id) }
+                .filter {
+                    !it.id.startsWith("local_") &&
+                        !deletedVideoIds.contains(it.id) &&
+                        !isDemoOrForbiddenVideo(it.id, it.title, it.sourceUrl)
+                }
                 .forEach { v ->
                     clientVideosArr.put(
                         JSONObject().apply {
                             put("id", v.id)
                             put("title", v.title)
                             put("sourceUrl", v.sourceUrl)
-                            put("backupUrl", v.backupUrl)
+                            put("backupUrl", "")
                             put("localFileName", v.localFileName)
                             put("zoneId", v.zoneId)
                             put("sizeBytes", v.sizeBytes)
@@ -86,6 +108,8 @@ class VercelCmsApiClient {
                 put("pairingCode", pairingCode)
                 put("code", pairingCode)
                 put("deviceName", deviceName)
+                put("isPaired", true)
+                put("paired", true)
                 put("zoneId", "zone_lobby")
                 put("orientation", currentOrientation)
                 put("videoRotateDegrees", currentVideoRotateDegrees)
@@ -168,11 +192,7 @@ class VercelCmsApiClient {
                 else -> currentIsMuted
             }
 
-            val isPaired = when {
-                deviceObj.has("isPaired") -> deviceObj.optBoolean("isPaired", true)
-                deviceObj.has("paired") -> deviceObj.optBoolean("paired", true)
-                else -> true
-            }
+            val isPaired = true
 
             val effectivePushCmd = deviceObj.optString(
                 "lastPushCommand",
@@ -208,10 +228,12 @@ class VercelCmsApiClient {
                     val v = arr.optJSONObject(i) ?: continue
                     val rawId = v.optString("id", v.optString("_id", "vid_$i")).ifBlank { "vid_$i" }
                     if (remoteDeletedSet.contains(rawId)) continue
+                    val title = v.optString("title", v.optString("name", "Uploaded Video #${i + 1}"))
                     val rawSourceUrl = v.optString(
                         "sourceUrl",
                         v.optString("url", v.optString("videoUrl", v.optString("src", "")))
                     )
+                    if (isDemoOrForbiddenVideo(rawId, title, rawSourceUrl)) continue
                     val resolvedSourceUrl = if (rawSourceUrl.startsWith("/")) {
                         "$cleanBase$rawSourceUrl"
                     } else {
@@ -225,9 +247,9 @@ class VercelCmsApiClient {
                         PlaylistVideo(
                             id = rawId,
                             userId = "vercel_web_cms",
-                            title = v.optString("title", v.optString("name", "Cloud Video #${i + 1}")),
+                            title = title,
                             sourceUrl = resolvedSourceUrl,
-                            backupUrl = v.optString("backupUrl", ""),
+                            backupUrl = "",
                             localFileName = safeLocalName,
                             zoneId = v.optString("zoneId", "ALL"),
                             sizeBytes = v.optLong("sizeBytes", v.optLong("size", 1843200L)),

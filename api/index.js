@@ -3,12 +3,12 @@
  * Deployed at: https://tv-br.vercel.app
  *
  * Features:
- * - Multi-instance resilient state & video synchronization:
- *   Accepts client-known videos, deletedVideoIds, and device orientation timestamps in /api/heartbeat
- *   and /api/state so Vercel serverless cold starts NEVER wipe out uploaded videos or flip TV orientation.
- * - Lossless 600KB chunked video upload to /tmp/videos + in-memory chunk cache for fast multi-device sync
- * - Per-device independent Orientation (LANDSCAPE / PORTRAIT), Video Rotation (+90° / -90° / 0° / 90° / 180° / 270°),
- *   Scale Mode (FIT / FILL / ZOOM), Audio Mute, and Video Assignment.
+ * - Zero Demo Videos: Completely free of any sample/demo/fallback videos. Only user-uploaded videos exist.
+ * - Multi-instance resilient video & device synchronization:
+ *   Reconciles client-known videos, paired devices, deletedVideoIds, and orientation timestamps in
+ *   /api/reconcile, /api/heartbeat, and /api/state so Vercel cold starts NEVER lose videos or unpair TVs.
+ * - Lossless chunked video assembly + HTTP 206 Partial Content byte-range streaming for instant
+ *   Web Live Preview & Android ExoPlayer playback.
  */
 
 const fs = require("node:fs");
@@ -17,16 +17,41 @@ const crypto = require("node:crypto");
 
 const TMP_DIR = "/tmp";
 const VIDEOS_DIR = path.join(TMP_DIR, "videos");
-const STATE_FILE = path.join(TMP_DIR, "pulsecast_cms_live_state.json");
-const CHUNK_SIZE_LIMIT = 2 * 1024 * 1024; // Allow up to 2MB per chunk for high-bitrate 4K/1080p videos
+const CHUNKS_DIR = path.join(TMP_DIR, "videos_chunks");
+const STATE_FILE = path.join(TMP_DIR, "pulsecast_cms_live_state_v3.json");
+const CHUNK_SIZE_LIMIT = 4 * 1024 * 1024; // Allow up to 4MB per chunk for lossless original-quality uploads
 
 if (!fs.existsSync(VIDEOS_DIR)) {
   fs.mkdirSync(VIDEOS_DIR, { recursive: true });
 }
+if (!fs.existsSync(CHUNKS_DIR)) {
+  fs.mkdirSync(CHUNKS_DIR, { recursive: true });
+}
 
-const DEFAULT_BACKUP_URL = "https://www.w3schools.com/html/mov_bbb.mp4";
-const SECONDARY_BACKUP_URL =
-  "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4";
+// In-memory cache of assembled video buffers per warm Node process
+global.__pulsecastVideoMemoryCache = global.__pulsecastVideoMemoryCache || new Map();
+
+function isDemoOrLegacyUrl(urlStr) {
+  const s = String(urlStr || "").toLowerCase();
+  return (
+    s.includes("mov_bbb") ||
+    s.includes("w3schools") ||
+    s.includes("flower.mp4") ||
+    s.includes("mdn.mozilla.net") ||
+    s.includes("gtv-videos-bucket") ||
+    s.includes("commondatastorage.googleapis.com") ||
+    s.includes("forbigger") ||
+    s.includes("bigbuckbunny")
+  );
+}
+
+function isDemoVideoEntry(v) {
+  if (!v || !v.id) return true;
+  const idStr = String(v.id).toLowerCase();
+  if (idStr.startsWith("seed_") || idStr.startsWith("demo_")) return true;
+  if (isDemoOrLegacyUrl(v.sourceUrl)) return true;
+  return false;
+}
 
 function getInitialStore() {
   return {
@@ -87,12 +112,16 @@ function readStore() {
       const raw = fs.readFileSync(STATE_FILE, "utf8");
       const parsed = JSON.parse(raw);
       const init = getInitialStore();
+      const deletedSet = new Set(Array.isArray(parsed.deletedVideoIds) ? parsed.deletedVideoIds : []);
+      const cleanVideos = (Array.isArray(parsed.videos) ? parsed.videos : []).filter(
+        (v) => v && v.id && !deletedSet.has(v.id) && !isDemoVideoEntry(v)
+      );
       return {
         ...init,
         ...parsed,
         liveState: { ...init.liveState, ...(parsed.liveState || {}) },
-        videos: Array.isArray(parsed.videos) ? parsed.videos : [],
-        deletedVideoIds: Array.isArray(parsed.deletedVideoIds) ? parsed.deletedVideoIds : [],
+        videos: cleanVideos,
+        deletedVideoIds: Array.from(deletedSet),
         devices: Array.isArray(parsed.devices) ? parsed.devices : [],
       };
     }
@@ -114,25 +143,27 @@ function writeStore(store) {
 }
 
 /**
- * Merges client-known videos into the server store without resurrecting explicitly deleted videos.
- * Ensures videos NEVER disappear when Vercel spins up a new serverless instance or when the browser refreshes.
+ * Merges client-known videos and paired devices into the server store without resurrecting deleted videos
+ * or demo videos. Ensures videos and paired devices NEVER disappear on refresh or serverless cold start.
  */
-function reconcileClientVideos(store, clientVideos, clientDeletedIds) {
+function reconcileClientState(store, clientVideos, clientDeletedIds, clientDevices) {
   let changed = false;
   const deletedSet = new Set(store.deletedVideoIds || []);
   if (Array.isArray(clientDeletedIds)) {
     for (const delId of clientDeletedIds) {
       if (delId && !deletedSet.has(delId)) {
-        deletedSet.add(delId);
+        deletedSet.add(String(delId));
         changed = true;
       }
     }
   }
   store.deletedVideoIds = Array.from(deletedSet);
 
-  // Remove any videos that are in deletedSet
+  // Strip deleted or demo videos
   const beforeLen = store.videos.length;
-  store.videos = (store.videos || []).filter((v) => v && v.id && !deletedSet.has(v.id));
+  store.videos = (store.videos || []).filter(
+    (v) => v && v.id && !deletedSet.has(v.id) && !isDemoVideoEntry(v)
+  );
   if (store.videos.length !== beforeLen) {
     changed = true;
   }
@@ -140,29 +171,101 @@ function reconcileClientVideos(store, clientVideos, clientDeletedIds) {
   if (Array.isArray(clientVideos)) {
     const existingIds = new Set(store.videos.map((v) => v.id));
     for (const cv of clientVideos) {
-      if (!cv || !cv.id || deletedSet.has(cv.id)) continue;
+      if (!cv || !cv.id || deletedSet.has(cv.id) || isDemoVideoEntry(cv)) continue;
       if (!existingIds.has(cv.id)) {
         store.videos.push({
           id: String(cv.id),
           title: String(cv.title || "Uploaded Video").slice(0, 120),
-          sourceUrl: String(cv.sourceUrl || DEFAULT_BACKUP_URL),
-          backupUrl: String(cv.backupUrl || DEFAULT_BACKUP_URL),
+          sourceUrl: String(cv.sourceUrl || ""),
+          backupUrl: "",
           localFileName: String(cv.localFileName || `${cv.id}.mp4`),
           zoneId: String(cv.zoneId || "zone_lobby"),
           targetDeviceId: String(cv.targetDeviceId || "ALL"),
-          sizeBytes: Number(cv.sizeBytes) || 1843200,
+          sizeBytes: Number(cv.sizeBytes) || 0,
           chunkCount: Number(cv.chunkCount) || 1,
           sha256Checksum: String(cv.sha256Checksum || ""),
           isVerifiedCached: true,
-          sortOrder: store.videos.length,
+          sortOrder: Number(cv.sortOrder) || 0,
           createdAtEpochMs: Number(cv.createdAtEpochMs) || Date.now(),
         });
         existingIds.add(cv.id);
         changed = true;
       }
     }
+    // Sort newest first so the most recently uploaded video is always primary
+    store.videos.sort((a, b) => (Number(b.createdAtEpochMs) || 0) - (Number(a.createdAtEpochMs) || 0));
   }
+
+  // Reconcile paired devices so once a TV is paired, it stays permanently paired across cold starts
+  if (Array.isArray(clientDevices)) {
+    const existingByCode = new Map();
+    for (const d of store.devices || []) {
+      if (d && (d.id || d.pairingCode)) {
+        existingByCode.set(d.pairingCode || d.id, d);
+      }
+    }
+    for (const cd of clientDevices) {
+      if (!cd || (!cd.id && !cd.pairingCode)) continue;
+      const key = cd.pairingCode || cd.id;
+      if (!existingByCode.has(key)) {
+        const restoredDevice = {
+          id: String(cd.id || `tv_${cd.pairingCode}`),
+          pairingCode: String(cd.pairingCode || "000000").padStart(6, "0").slice(0, 6),
+          deviceName: String(cd.deviceName || `Android TV #${cd.pairingCode}`),
+          zoneId: String(cd.zoneId || "zone_lobby"),
+          isPaired: true,
+          isOnline: Boolean(cd.isOnline),
+          lastHeartbeatEpochSec: Number(cd.lastHeartbeatEpochSec) || 0,
+          orientation: String(cd.orientation || "LANDSCAPE"),
+          videoRotateDegrees: normalizeDegrees(cd.videoRotateDegrees || 0),
+          scaleMode: String(cd.scaleMode || "FILL"),
+          isMuted: Boolean(cd.isMuted),
+          assignedVideoId: String(cd.assignedVideoId || "ALL"),
+          kioskLocked: cd.kioskLocked !== undefined ? Boolean(cd.kioskLocked) : true,
+          settingsUpdatedAtMs: Number(cd.settingsUpdatedAtMs) || 0,
+          lastPushCommand: String(cd.lastPushCommand || store.liveState.lastPushCommand || "READY"),
+          currentVideoTitle: String(cd.currentVideoTitle || "Ready"),
+          cachedVideoCount: Number(cd.cachedVideoCount) || 0,
+          installedVersionCode: Number(cd.installedVersionCode) || 1,
+          installedVersionName: String(cd.installedVersionName || "1.0.0"),
+          previousSlotVersionCode: Number(cd.previousSlotVersionCode) || 1,
+          previousSlotVersionName: String(cd.previousSlotVersionName || "1.0.0"),
+          otaStatus: String(cd.otaStatus || "UP_TO_DATE"),
+          lastOtaMessage: String(cd.lastOtaMessage || "Slot A Verified & Healthy"),
+        };
+        store.devices.push(restoredDevice);
+        existingByCode.set(key, restoredDevice);
+        changed = true;
+      }
+    }
+  }
+
   return changed;
+}
+
+function computeMissingServerVideoIds(store) {
+  const missing = [];
+  for (const v of store.videos || []) {
+    if (!v || !v.id || !v.localFileName) continue;
+    const isServerHostedFile = String(v.sourceUrl || "").includes("/api/videos/file/");
+    if (!isServerHostedFile) continue;
+    const fName = path.basename(v.localFileName);
+    const fPath = path.join(VIDEOS_DIR, fName);
+    const hasInMem = global.__pulsecastVideoMemoryCache.has(fName);
+    const hasOnDisk = fs.existsSync(fPath) && fs.statSync(fPath).size > 256;
+    if (!hasInMem && !hasOnDisk) {
+      missing.push(v.id);
+    }
+  }
+  return missing;
+}
+
+function detectMimeType(fileName) {
+  const ext = path.extname(fileName || "").toLowerCase();
+  if (ext === ".webm") return "video/webm";
+  if (ext === ".mov" || ext === ".qt") return "video/quicktime";
+  if (ext === ".mkv") return "video/x-matroska";
+  return "video/mp4";
 }
 
 function parseJsonBody(req) {
@@ -196,7 +299,8 @@ function parseJsonBody(req) {
 function sendJson(res, statusCode, payload) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Range");
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.statusCode = statusCode;
   res.end(JSON.stringify(payload));
@@ -211,23 +315,65 @@ module.exports = async function handler(req, res) {
   const pathname = urlObj.pathname;
   const store = readStore();
 
-  // 1. Stream uploaded video files from /tmp/videos/:fileName
+  // 1. Stream uploaded video files from memory or /tmp/videos/:fileName with full HTTP 206 Range support
   if (req.method === "GET" && pathname.startsWith("/api/videos/file/")) {
     const fileName = path.basename(decodeURIComponent(pathname.replace("/api/videos/file/", "")));
     const filePath = path.join(VIDEOS_DIR, fileName);
-    if (!fs.existsSync(filePath)) {
-      res.writeHead(302, { Location: DEFAULT_BACKUP_URL });
-      return res.end();
+    const mimeType = detectMimeType(fileName);
+
+    let fileBuffer = global.__pulsecastVideoMemoryCache.get(fileName) || null;
+    if (!fileBuffer && fs.existsSync(filePath)) {
+      try {
+        fileBuffer = fs.readFileSync(filePath);
+        if (fileBuffer.length <= 25 * 1024 * 1024) {
+          global.__pulsecastVideoMemoryCache.set(fileName, fileBuffer);
+        }
+      } catch (_) {}
     }
-    const stat = fs.statSync(filePath);
+
+    if (!fileBuffer || fileBuffer.length === 0) {
+      // NEVER redirect to a demo video! Return 404 so the client retries or Web Dashboard re-seeds.
+      return sendJson(res, 404, {
+        ok: false,
+        error: "Video binary syncing to this instance — retry in 1s",
+        fileName,
+      });
+    }
+
+    const totalSize = fileBuffer.length;
+    const rangeHeader = req.headers.range;
+
+    if (rangeHeader) {
+      const parts = rangeHeader.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10) || 0;
+      const end = parts[1] ? Math.min(totalSize - 1, parseInt(parts[1], 10)) : totalSize - 1;
+      if (start >= totalSize || start > end) {
+        res.writeHead(416, {
+          "Content-Range": `bytes */${totalSize}`,
+          "Access-Control-Allow-Origin": "*",
+        });
+        return res.end();
+      }
+      const chunkSize = end - start + 1;
+      res.writeHead(206, {
+        "Content-Range": `bytes ${start}-${end}/${totalSize}`,
+        "Accept-Ranges": "bytes",
+        "Content-Length": chunkSize,
+        "Content-Type": mimeType,
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "public, max-age=31536000, immutable",
+      });
+      return res.end(fileBuffer.subarray(start, end + 1));
+    }
+
     res.writeHead(200, {
-      "Content-Type": "video/mp4",
-      "Content-Length": stat.size,
+      "Content-Type": mimeType,
+      "Content-Length": totalSize,
       "Access-Control-Allow-Origin": "*",
       "Accept-Ranges": "bytes",
+      "Cache-Control": "public, max-age=31536000, immutable",
     });
-    fs.createReadStream(filePath).pipe(res);
-    return;
+    return res.end(fileBuffer);
   }
 
   // 2. GET /api/state (or /api/sync, /api/live-state)
@@ -238,44 +384,46 @@ module.exports = async function handler(req, res) {
     const nowSec = Math.floor(Date.now() / 1000);
     store.devices = (store.devices || []).map((dev) => ({
       ...dev,
+      isPaired: true,
       isOnline: nowSec - (dev.lastHeartbeatEpochSec || 0) < 15,
     }));
     return sendJson(res, 200, {
       ok: true,
       serverTimeMs: Date.now(),
+      missingServerVideoIds: computeMissingServerVideoIds(store),
       ...store,
     });
   }
 
   const body = await parseJsonBody(req);
 
-  // 2b. POST /api/reconcile — Web Dashboard sends its localStorage videos & deletedVideoIds so cold Vercel instances never lose videos
+  // 2b. POST /api/reconcile — Web Dashboard sends its localStorage videos, deletedVideoIds & paired devices
   if (req.method === "POST" && pathname === "/api/reconcile") {
-    const changed = reconcileClientVideos(store, body.videos, body.deletedVideoIds);
+    const changed = reconcileClientState(
+      store,
+      body.videos,
+      body.deletedVideoIds,
+      body.devices
+    );
     if (changed) {
       writeStore(store);
     }
     const nowSec = Math.floor(Date.now() / 1000);
     store.devices = (store.devices || []).map((dev) => ({
       ...dev,
+      isPaired: true,
       isOnline: nowSec - (dev.lastHeartbeatEpochSec || 0) < 15,
     }));
     return sendJson(res, 200, {
       ok: true,
       serverTimeMs: Date.now(),
+      missingServerVideoIds: computeMissingServerVideoIds(store),
       ...store,
     });
   }
 
   // 3. POST /api/state — Update global liveState fields
   if (req.method === "POST" && (pathname === "/api/state" || pathname === "/api/live-state")) {
-    const activeZone = store.zones.find((z) => z.id === (body.activeZoneId || store.liveState.activeZoneId));
-    if (body.orientation && activeZone && activeZone.canRotateScreen === false) {
-      return sendJson(res, 403, {
-        ok: false,
-        error: `Permission Denied: Role '${activeZone.operatorRole}' cannot rotate screen in '${activeZone.zoneName}'`,
-      });
-    }
     let nextVideoRotate = store.liveState.videoRotateDegrees || 0;
     if (body.videoRotateDegrees !== undefined) {
       nextVideoRotate = normalizeDegrees(body.videoRotateDegrees);
@@ -299,13 +447,14 @@ module.exports = async function handler(req, res) {
       ...(body.activeOtaVersionName !== undefined ? { activeOtaVersionName: String(body.activeOtaVersionName) } : {}),
     };
 
-    // Also update all existing devices if global orientation/rotation/scale was explicitly changed
     if (
       body.orientation !== undefined ||
       body.videoRotateDegrees !== undefined ||
       body.rotateDelta !== undefined ||
       body.scaleMode !== undefined ||
-      body.isMuted !== undefined
+      body.isMuted !== undefined ||
+      body.assignedVideoId !== undefined ||
+      body.lastPushCommand !== undefined
     ) {
       store.devices = (store.devices || []).map((dev) => ({
         ...dev,
@@ -315,17 +464,24 @@ module.exports = async function handler(req, res) {
           : {}),
         ...(body.scaleMode !== undefined ? { scaleMode: body.scaleMode } : {}),
         ...(body.isMuted !== undefined ? { isMuted: Boolean(body.isMuted) } : {}),
+        ...(body.assignedVideoId !== undefined ? { assignedVideoId: String(body.assignedVideoId) } : {}),
         settingsUpdatedAtMs: nowMs,
-        lastPushCommand: `GLOBAL_STATE_${nowMs}`,
+        lastPushCommand: store.liveState.lastPushCommand,
       }));
     }
 
-    reconcileClientVideos(store, body.clientVideos, body.deletedVideoIds);
+    reconcileClientState(store, body.clientVideos, body.deletedVideoIds, body.clientDevices);
     writeStore(store);
-    return sendJson(res, 200, { ok: true, liveState: store.liveState, devices: store.devices, videos: store.videos });
+    return sendJson(res, 200, {
+      ok: true,
+      liveState: store.liveState,
+      devices: store.devices,
+      videos: store.videos,
+      missingServerVideoIds: computeMissingServerVideoIds(store),
+    });
   }
 
-  // 4. POST /api/device-control — Per-Device Orientation, Video Rotate (+90/-90/0/90/180/270), Scale Mode (FIT/FILL/ZOOM), Mute, and Video Assignment
+  // 4. POST /api/device-control — Per-Device Orientation, Video Rotate, Scale Mode, Mute & Video Assignment
   if (req.method === "POST" && pathname === "/api/device-control") {
     const {
       deviceId,
@@ -345,7 +501,6 @@ module.exports = async function handler(req, res) {
     );
     const nowMs = Date.now();
     if (idx === -1) {
-      // Create the device entry if this serverless instance hasn't seen it yet
       const code = String(pairingCode || "000000").padStart(6, "0").slice(0, 6);
       const newDev = {
         id: deviceId || `tv_${code}`,
@@ -385,6 +540,7 @@ module.exports = async function handler(req, res) {
 
     store.devices[idx] = {
       ...target,
+      isPaired: true,
       ...(deviceName !== undefined ? { deviceName: String(deviceName) } : {}),
       ...(zoneId !== undefined ? { zoneId: String(zoneId) } : {}),
       ...(orientation !== undefined ? { orientation: String(orientation) } : {}),
@@ -401,9 +557,20 @@ module.exports = async function handler(req, res) {
     return sendJson(res, 200, { ok: true, device: store.devices[idx], devices: store.devices });
   }
 
-  // 5. POST /api/upload-chunk — Lossless 600KB chunked video uploader to /tmp/videos
+  // 5. POST /api/upload-chunk — Lossless Original-Quality Video Uploader with Multi-Chunk Verification
   if (req.method === "POST" && pathname === "/api/upload-chunk") {
-    const { fileId, fileName, title, zoneId, targetDeviceId, chunkIndex, totalChunks, base64Chunk, totalFileSize } = body;
+    const {
+      fileId,
+      fileName,
+      title,
+      zoneId,
+      targetDeviceId,
+      chunkIndex,
+      totalChunks,
+      base64Chunk,
+      totalFileSize,
+      isReseed,
+    } = body;
     if (!fileId || !base64Chunk) {
       return sendJson(res, 400, { ok: false, error: "Missing fileId or base64Chunk" });
     }
@@ -412,104 +579,183 @@ module.exports = async function handler(req, res) {
       return sendJson(res, 413, { ok: false, error: "Chunk exceeds limit" });
     }
 
-    const safeFileName = `${fileId}_${(fileName || "video.mp4").replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+    const cleanFileId = String(fileId).replace(/[^a-zA-Z0-9._-]/g, "");
+    const safeFileName = body.localFileName
+      ? path.basename(String(body.localFileName))
+      : `${cleanFileId}_${(fileName || "video.mp4").replace(/[^a-zA-Z0-9._-]/g, "_")}`;
     const targetPath = path.join(VIDEOS_DIR, safeFileName);
+    const totalChunksNum = Math.max(1, Number(totalChunks) || 1);
+    const chunkIdxNum = Math.max(0, Number(chunkIndex) || 0);
 
-    if (Number(chunkIndex) === 0 && fs.existsSync(targetPath)) {
-      fs.unlinkSync(targetPath);
+    // Save individual chunk part file so chunks can be verified and assembled without corruption
+    const partPath = path.join(CHUNKS_DIR, `${safeFileName}.part_${chunkIdxNum}`);
+    fs.writeFileSync(partPath, buffer);
+
+    // Check which chunks we have on this instance
+    const missingChunks = [];
+    for (let i = 0; i <= chunkIdxNum; i++) {
+      const p = path.join(CHUNKS_DIR, `${safeFileName}.part_${i}`);
+      if (!fs.existsSync(p)) {
+        missingChunks.push(i);
+      }
     }
-    fs.appendFileSync(targetPath, buffer);
 
-    const isComplete = Number(chunkIndex) + 1 >= Number(totalChunks);
+    const isLastChunk = chunkIdxNum + 1 >= totalChunksNum;
+    let isComplete = false;
     let videoEntry = null;
 
-    if (isComplete) {
-      const fileExists = fs.existsSync(targetPath);
-      const actualBytes = fileExists ? fs.statSync(targetPath).size : Number(totalFileSize) || buffer.length;
-      const sha256Checksum = fileExists
-        ? crypto.createHash("sha256").update(fs.readFileSync(targetPath)).digest("hex")
-        : crypto.createHash("sha256").update(buffer).digest("hex");
-      const hostUrl = `https://${req.headers.host || "tv-br.vercel.app"}`;
-      const vidId = `vid_${fileId}`;
+    if (isLastChunk && missingChunks.length === 0) {
+      // Verify all chunks 0 .. totalChunksNum - 1 exist
+      for (let i = 0; i < totalChunksNum; i++) {
+        const p = path.join(CHUNKS_DIR, `${safeFileName}.part_${i}`);
+        if (!fs.existsSync(p)) {
+          missingChunks.push(i);
+        }
+      }
+    }
 
-      // Ensure it is not in deletedVideoIds
+    if (isLastChunk && missingChunks.length === 0) {
+      // Assemble all chunks in exact order into targetPath and memory cache
+      const buffers = [];
+      for (let i = 0; i < totalChunksNum; i++) {
+        const p = path.join(CHUNKS_DIR, `${safeFileName}.part_${i}`);
+        buffers.push(fs.readFileSync(p));
+      }
+      const fullBuffer = Buffer.concat(buffers);
+      fs.writeFileSync(targetPath, fullBuffer);
+      if (fullBuffer.length <= 25 * 1024 * 1024) {
+        global.__pulsecastVideoMemoryCache.set(safeFileName, fullBuffer);
+      }
+      // Clean up temporary part files
+      for (let i = 0; i < totalChunksNum; i++) {
+        const p = path.join(CHUNKS_DIR, `${safeFileName}.part_${i}`);
+        try {
+          fs.unlinkSync(p);
+        } catch (_) {}
+      }
+
+      isComplete = true;
+      const actualBytes = fullBuffer.length;
+      const sha256Checksum = crypto.createHash("sha256").update(fullBuffer).digest("hex");
+      const hostUrl = `https://${req.headers.host || "tv-br.vercel.app"}`;
+      const vidId = body.videoId ? String(body.videoId) : `vid_${cleanFileId}`;
+      const nowMs = Date.now();
+
       store.deletedVideoIds = (store.deletedVideoIds || []).filter((id) => id !== vidId);
 
+      const existingEntry = (store.videos || []).find((v) => v.id === vidId);
       videoEntry = {
         id: vidId,
-        title: (title || fileName || "Uploaded Ad Creative").slice(0, 120),
+        title: (title || (existingEntry && existingEntry.title) || fileName || "Uploaded Video").slice(0, 120),
         sourceUrl: `${hostUrl}/api/videos/file/${encodeURIComponent(safeFileName)}`,
-        backupUrl: DEFAULT_BACKUP_URL,
+        backupUrl: "",
         localFileName: safeFileName,
         zoneId: zoneId || store.liveState.activeZoneId || "zone_lobby",
-        targetDeviceId: targetDeviceId || "ALL",
+        targetDeviceId: targetDeviceId || (existingEntry && existingEntry.targetDeviceId) || "ALL",
         sizeBytes: Number(totalFileSize) || actualBytes,
-        chunkCount: Number(totalChunks) || 1,
+        chunkCount: totalChunksNum,
         sha256Checksum,
         isVerifiedCached: true,
-        sortOrder: store.videos.length,
-        createdAtEpochMs: Date.now(),
+        sortOrder: 0,
+        createdAtEpochMs: isReseed && existingEntry ? existingEntry.createdAtEpochMs : nowMs,
       };
-      store.videos = store.videos.filter((v) => v.id !== vidId).concat(videoEntry);
-      if (targetDeviceId && targetDeviceId !== "ALL") {
-        store.devices = store.devices.map((d) =>
-          d.id === targetDeviceId
-            ? { ...d, assignedVideoId: videoEntry.id, lastPushCommand: `UPLOAD_${videoEntry.id}_${Date.now()}` }
-            : d
-        );
+
+      // Place newest uploaded video FIRST in playlist so all TVs & Live Preview play it immediately!
+      const remaining = (store.videos || []).filter((v) => v.id !== vidId && !isDemoVideoEntry(v));
+      store.videos = [videoEntry, ...remaining].map((v, idx) => ({ ...v, sortOrder: idx }));
+
+      if (!isReseed) {
+        if (targetDeviceId && targetDeviceId !== "ALL") {
+          store.devices = (store.devices || []).map((d) =>
+            d.id === targetDeviceId
+              ? { ...d, assignedVideoId: videoEntry.id, lastPushCommand: `UPLOAD_PLAY_${videoEntry.id}_${nowMs}` }
+              : d
+          );
+        } else {
+          // Ensure all devices play the newly uploaded playlist immediately!
+          store.devices = (store.devices || []).map((d) => ({
+            ...d,
+            assignedVideoId: "ALL",
+            lastPushCommand: `UPLOAD_PLAY_${videoEntry.id}_${nowMs}`,
+          }));
+        }
+        store.liveState.lastPushCommand = `UPLOAD_PLAY_${videoEntry.id}_${nowMs}`;
       }
-      store.liveState.lastPushCommand = `UPLOAD_${videoEntry.id}_${Date.now()}`;
       writeStore(store);
     }
 
     return sendJson(res, 200, {
       ok: true,
       isComplete,
-      chunkIndex: Number(chunkIndex),
-      totalChunks: Number(totalChunks),
+      missingChunks,
+      chunkIndex: chunkIdxNum,
+      totalChunks: totalChunksNum,
       video: videoEntry,
       videos: store.videos,
     });
   }
 
-  // 6. POST /api/videos — Add stream URL creative to playlist (optionally assigned to a specific device)
+  // 6. POST /api/videos — Add direct stream URL creative to playlist (placed first so it plays immediately)
   if (req.method === "POST" && pathname === "/api/videos") {
+    const rawSourceUrl = String(body.sourceUrl || "").trim();
+    if (!rawSourceUrl || isDemoOrLegacyUrl(rawSourceUrl)) {
+      return sendJson(res, 400, {
+        ok: false,
+        error: "Please enter a valid video stream URL or upload a video file above.",
+      });
+    }
     const vidId = body.id || `vid_${Date.now().toString(36)}`;
     const targetDeviceId = body.targetDeviceId || "ALL";
+    const nowMs = Date.now();
     store.deletedVideoIds = (store.deletedVideoIds || []).filter((id) => id !== vidId);
     const newVideo = {
       id: vidId,
-      title: (body.title || `Broadcast Creative #${store.videos.length + 1}`).slice(0, 120),
-      sourceUrl: body.sourceUrl || DEFAULT_BACKUP_URL,
-      backupUrl: body.backupUrl || SECONDARY_BACKUP_URL,
+      title: (body.title || `Broadcast Video #${store.videos.length + 1}`).slice(0, 120),
+      sourceUrl: rawSourceUrl,
+      backupUrl: "",
       localFileName: body.localFileName || `${vidId}.mp4`,
       zoneId: body.zoneId || store.liveState.activeZoneId || "zone_lobby",
       targetDeviceId,
-      sizeBytes: Number(body.sizeBytes) || 1843200,
-      chunkCount: Number(body.chunkCount) || 3,
+      sizeBytes: Number(body.sizeBytes) || 0,
+      chunkCount: Number(body.chunkCount) || 1,
       isVerifiedCached: true,
-      sortOrder: store.videos.length,
-      createdAtEpochMs: Date.now(),
+      sortOrder: 0,
+      createdAtEpochMs: nowMs,
     };
-    store.videos = store.videos.filter((v) => v.id !== vidId).concat(newVideo);
+    const remaining = (store.videos || []).filter((v) => v.id !== vidId && !isDemoVideoEntry(v));
+    store.videos = [newVideo, ...remaining].map((v, idx) => ({ ...v, sortOrder: idx }));
+
     if (targetDeviceId && targetDeviceId !== "ALL") {
       store.devices = store.devices.map((d) =>
         d.id === targetDeviceId
-          ? { ...d, assignedVideoId: vidId, lastPushCommand: `ADD_VIDEO_${vidId}_${Date.now()}` }
+          ? { ...d, assignedVideoId: vidId, lastPushCommand: `ADD_VIDEO_${vidId}_${nowMs}` }
           : d
       );
+    } else {
+      store.devices = store.devices.map((d) => ({
+        ...d,
+        assignedVideoId: "ALL",
+        lastPushCommand: `ADD_VIDEO_${vidId}_${nowMs}`,
+      }));
     }
-    store.liveState.lastPushCommand = `ADD_VIDEO_${vidId}_${Date.now()}`;
+    store.liveState.lastPushCommand = `ADD_VIDEO_${vidId}_${nowMs}`;
     writeStore(store);
-    return sendJson(res, 200, { ok: true, video: newVideo, videos: store.videos, deletedVideoIds: store.deletedVideoIds });
+    return sendJson(res, 200, {
+      ok: true,
+      video: newVideo,
+      videos: store.videos,
+      deletedVideoIds: store.deletedVideoIds,
+    });
   }
 
-  // 7. POST /api/videos/delete — Explicitly remove video from playlist & record tombstone so it never reappears
+  // 7. POST /api/videos/delete — Explicitly remove video from playlist & record tombstone
   if (req.method === "POST" && pathname === "/api/videos/delete") {
     const videoId = body.videoId || body.id;
     const targetVid = store.videos.find((v) => v.id === videoId);
     if (targetVid && targetVid.localFileName) {
-      const fPath = path.join(VIDEOS_DIR, path.basename(targetVid.localFileName));
+      const baseName = path.basename(targetVid.localFileName);
+      global.__pulsecastVideoMemoryCache.delete(baseName);
+      const fPath = path.join(VIDEOS_DIR, baseName);
       if (fs.existsSync(fPath)) {
         try {
           fs.unlinkSync(fPath);
@@ -528,14 +774,13 @@ module.exports = async function handler(req, res) {
     return sendJson(res, 200, { ok: true, videos: store.videos, deletedVideoIds: store.deletedVideoIds });
   }
 
-  // 8. POST /api/pair & POST /api/heartbeat — 6-Digit Device Pairing & 2.0s Sync Loop
+  // 8. POST /api/pair & POST /api/heartbeat — Automatic Permanent Pairing & 2.0s Sync Loop
   if (req.method === "POST" && (pathname === "/api/pair" || pathname === "/api/heartbeat")) {
     const nowSec = Math.floor(Date.now() / 1000);
     const code = String(body.pairingCode || "000000").padStart(6, "0").slice(0, 6);
     const deviceId = body.deviceId || `tv_${code}`;
 
-    // Reconcile any videos known by the client so cold Vercel instances never wipe out the playlist
-    reconcileClientVideos(store, body.clientVideos, body.deletedVideoIds);
+    reconcileClientState(store, body.clientVideos, body.deletedVideoIds, body.clientDevices);
 
     const existing = store.devices.find((d) => d.id === deviceId || d.pairingCode === code);
     const isPairingAction = pathname === "/api/pair";
@@ -544,33 +789,37 @@ module.exports = async function handler(req, res) {
     const serverDeviceSettingsMs = existing && existing.settingsUpdatedAtMs ? Number(existing.settingsUpdatedAtMs) : 0;
     const preferClientSettings = isPairingAction || !existing || clientSettingsMs > serverDeviceSettingsMs;
 
-    const resolvedOrientation = preferClientSettings && body.orientation
-      ? String(body.orientation)
-      : existing && existing.orientation
-      ? existing.orientation
-      : body.orientation || store.liveState.orientation || "LANDSCAPE";
+    const resolvedOrientation =
+      preferClientSettings && body.orientation
+        ? String(body.orientation)
+        : existing && existing.orientation
+        ? existing.orientation
+        : body.orientation || store.liveState.orientation || "LANDSCAPE";
 
-    const resolvedRotateDegrees = preferClientSettings && body.videoRotateDegrees !== undefined
-      ? normalizeDegrees(body.videoRotateDegrees)
-      : existing && existing.videoRotateDegrees !== undefined
-      ? normalizeDegrees(existing.videoRotateDegrees)
-      : body.videoRotateDegrees !== undefined
-      ? normalizeDegrees(body.videoRotateDegrees)
-      : normalizeDegrees(store.liveState.videoRotateDegrees || 0);
+    const resolvedRotateDegrees =
+      preferClientSettings && body.videoRotateDegrees !== undefined
+        ? normalizeDegrees(body.videoRotateDegrees)
+        : existing && existing.videoRotateDegrees !== undefined
+        ? normalizeDegrees(existing.videoRotateDegrees)
+        : body.videoRotateDegrees !== undefined
+        ? normalizeDegrees(body.videoRotateDegrees)
+        : normalizeDegrees(store.liveState.videoRotateDegrees || 0);
 
-    const resolvedScaleMode = preferClientSettings && body.scaleMode
-      ? String(body.scaleMode)
-      : existing && existing.scaleMode
-      ? existing.scaleMode
-      : body.scaleMode || store.liveState.scaleMode || "FILL";
+    const resolvedScaleMode =
+      preferClientSettings && body.scaleMode
+        ? String(body.scaleMode)
+        : existing && existing.scaleMode
+        ? existing.scaleMode
+        : body.scaleMode || store.liveState.scaleMode || "FILL";
 
-    const resolvedMuted = preferClientSettings && body.isMuted !== undefined
-      ? Boolean(body.isMuted)
-      : existing && existing.isMuted !== undefined
-      ? Boolean(existing.isMuted)
-      : body.isMuted !== undefined
-      ? Boolean(body.isMuted)
-      : Boolean(store.liveState.isMuted);
+    const resolvedMuted =
+      preferClientSettings && body.isMuted !== undefined
+        ? Boolean(body.isMuted)
+        : existing && existing.isMuted !== undefined
+        ? Boolean(existing.isMuted)
+        : body.isMuted !== undefined
+        ? Boolean(body.isMuted)
+        : Boolean(store.liveState.isMuted);
 
     const updatedDevice = {
       id: existing ? existing.id : deviceId,
@@ -585,7 +834,7 @@ module.exports = async function handler(req, res) {
         : existing
         ? existing.zoneId
         : body.zoneId || "zone_lobby",
-      isPaired: isPairingAction ? true : existing && existing.isPaired !== undefined ? existing.isPaired : true,
+      isPaired: true, // Always permanently paired once connected
       isOnline: true,
       lastHeartbeatEpochSec: nowSec,
       orientation: resolvedOrientation,
@@ -604,7 +853,7 @@ module.exports = async function handler(req, res) {
           ? Boolean(existing.kioskLocked)
           : Boolean(store.liveState.kioskLocked),
       lastPushCommand: existing && existing.lastPushCommand ? existing.lastPushCommand : store.liveState.lastPushCommand,
-      currentVideoTitle: body.currentVideoTitle || (existing ? existing.currentVideoTitle : "Standby"),
+      currentVideoTitle: body.currentVideoTitle || (existing ? existing.currentVideoTitle : "Ready"),
       cachedVideoCount:
         body.cachedVideoCount !== undefined ? Number(body.cachedVideoCount) : existing ? existing.cachedVideoCount : 0,
       installedVersionCode:
@@ -613,8 +862,7 @@ module.exports = async function handler(req, res) {
           : existing
           ? existing.installedVersionCode
           : 1,
-      installedVersionName:
-        body.installedVersionName || (existing ? existing.installedVersionName : "1.0.0"),
+      installedVersionName: body.installedVersionName || (existing ? existing.installedVersionName : "1.0.0"),
       previousSlotVersionCode:
         body.previousSlotVersionCode !== undefined
           ? Number(body.previousSlotVersionCode)
@@ -632,7 +880,6 @@ module.exports = async function handler(req, res) {
       .concat(updatedDevice);
     writeStore(store);
 
-    // Filter videos for this specific device (either assignedVideoId or ALL/zone videos)
     const deviceVideos =
       updatedDevice.assignedVideoId && updatedDevice.assignedVideoId !== "ALL"
         ? store.videos.filter((v) => v.id === updatedDevice.assignedVideoId)
@@ -662,7 +909,7 @@ module.exports = async function handler(req, res) {
     });
   }
 
-  // 9. POST /api/zones — Create or update Playback Zone & Granular RBAC Permissions
+  // 9. POST /api/zones — Create or update Playback Zone
   if (req.method === "POST" && pathname === "/api/zones") {
     const zoneId = body.id || `zone_${Date.now().toString(36)}`;
     const existing = store.zones.find((z) => z.id === zoneId);
@@ -678,8 +925,7 @@ module.exports = async function handler(req, res) {
         body.canRotateScreen !== undefined ? Boolean(body.canRotateScreen) : existing ? existing.canRotateScreen : true,
       canManageOta:
         body.canManageOta !== undefined ? Boolean(body.canManageOta) : existing ? existing.canManageOta : false,
-      orientationOverride:
-        body.orientationOverride || (existing ? existing.orientationOverride : "INHERIT"),
+      orientationOverride: body.orientationOverride || (existing ? existing.orientationOverride : "INHERIT"),
     };
     store.zones = store.zones.filter((z) => z.id !== zoneId).concat(updatedZone);
     writeStore(store);

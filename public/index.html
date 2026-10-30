@@ -47,7 +47,7 @@
         <div>
           <div class="flex items-center gap-2">
             <h1 class="font-display font-bold text-lg tracking-tight text-white">PulseCast Web CMS Dashboard</h1>
-            <span class="px-2.5 py-0.5 text-xs font-mono-code rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">LIVE 2.5s SYNC</span>
+            <span class="px-2.5 py-0.5 text-xs font-mono-code rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">LIVE 2.0s SYNC • AUTO-PAIR & PERMANENT VAULT</span>
           </div>
           <p class="text-xs text-slate-400 font-mono-code" id="headerSubStatus">Connecting to Android TV Fleet...</p>
         </div>
@@ -64,88 +64,88 @@
   <!-- Main Grid -->
   <main class="max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1">
 
-    <!-- Left 7 Columns: Connected TV Devices (Per-Device Orientation & Video Control) + 600KB Chunk Uploader -->
+    <!-- Left 7 Columns: Upload Video + Connected TV Devices (Per-Device Orientation & Video Control) -->
     <div class="lg:col-span-7 space-y-6">
 
-      <!-- 1. Pair New Android TV by 6-Digit Code -->
-      <section class="card-surface rounded-2xl p-5">
+      <!-- 1. Lossless Original-Quality Video Uploader (Persisted in IndexedDB + Auto-Pushed to All TVs) -->
+      <section class="card-surface rounded-2xl p-5 border-cyan-500/40">
         <div class="flex items-center justify-between mb-3">
           <div>
-            <span class="text-xs font-mono-code uppercase tracking-wider text-cyan-400">6-Digit Screen Pairing</span>
-            <h2 class="font-display text-lg font-bold text-white">Pair Android TV / Display Client</h2>
+            <span class="text-xs font-mono-code uppercase tracking-wider text-cyan-400">100% Original Quality • Auto-Push to All TVs</span>
+            <h2 class="font-display text-lg font-bold text-white">Upload Video (Plays on All Connected TVs)</h2>
           </div>
-          <span class="text-xs text-slate-400">Enter the 6-digit code shown on your Android TV</span>
-        </div>
-        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <input id="pairCodeInput" type="text" maxlength="6" placeholder="6-Digit Code (e.g. 482910)" class="px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono-code text-sm focus:outline-none focus:border-cyan-400" />
-          <input id="pairNameInput" type="text" placeholder="Screen Name (e.g. Lobby TV #1)" class="px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white text-sm focus:outline-none focus:border-cyan-400" />
-          <button onclick="pairDevice()" class="px-4 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-sm transition">
-            + Pair TV Screen
-          </button>
-        </div>
-      </section>
-
-      <!-- 2. Connected TV Displays — Per-Device Independent Orientation, Video Selection & Mute -->
-      <section class="card-surface rounded-2xl p-5">
-        <div class="flex items-center justify-between mb-4">
-          <div>
-            <span class="text-xs font-mono-code uppercase tracking-wider text-emerald-400">Per-Device Independent Control</span>
-            <h2 class="font-display text-lg font-bold text-white">Connected Android TV Screens (<span id="deviceCountBadge">0</span>)</h2>
-          </div>
-          <span class="text-xs text-slate-400">Control each TV's orientation, scale & video separately</span>
-        </div>
-
-        <div id="devicesContainer" class="space-y-4">
-          <div class="text-center py-8 text-slate-500 text-sm">
-            No Android TV screens paired yet. Open the Android TV app (it auto-registers within 2.5s) or enter its 6-digit code above.
-          </div>
-        </div>
-      </section>
-
-      <!-- 3. High-Speed 600KB Chunked Video Uploader -->
-      <section class="card-surface rounded-2xl p-5">
-        <div class="flex items-center justify-between mb-3">
-          <div>
-            <span class="text-xs font-mono-code uppercase tracking-wider text-cyan-400">600KB Chunked Ingestion Pipeline</span>
-            <h2 class="font-display text-lg font-bold text-white">Upload Ad Video or Add Stream URL</h2>
-          </div>
-          <span class="text-xs font-mono-code text-emerald-400">Saves to /tmp/videos + Local TV Cache ✔</span>
+          <span class="text-xs font-mono-code text-emerald-400">No Demo Videos • Permanent Vault ✔</span>
         </div>
 
         <div class="space-y-3">
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <input id="videoTitleInput" type="text" placeholder="Ad Creative Title (e.g. Nike 4K Spot)" class="px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white text-sm focus:outline-none focus:border-cyan-400" />
+            <input id="videoTitleInput" type="text" placeholder="Video Title (auto-filled from file name)" class="px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white text-sm focus:outline-none focus:border-cyan-400" />
             <select id="videoTargetDeviceSelect" class="px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white text-sm focus:outline-none focus:border-cyan-400">
-              <option value="ALL">Target: All Paired TV Screens</option>
+              <option value="ALL">Play On: All Connected TV Screens</option>
             </select>
           </div>
 
-          <!-- File Upload (600KB Chunks) -->
-          <div class="p-4 rounded-xl bg-slate-950 border border-dashed border-slate-700 flex flex-col sm:flex-row items-center justify-between gap-3">
-            <input id="videoFileInput" type="file" accept="video/mp4,video/webm,video/*" class="text-xs text-slate-300 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-cyan-500/20 file:text-cyan-300 hover:file:bg-cyan-500/30" />
-            <button onclick="uploadFileIn600KBChunks()" class="w-full sm:w-auto px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs transition shrink-0">
-              Upload in 600KB Chunks
+          <!-- File Upload (Lossless Chunks + Instant Preview + IndexedDB Vault) -->
+          <div class="p-4 rounded-xl bg-slate-950 border border-dashed border-cyan-500/50 flex flex-col sm:flex-row items-center justify-between gap-3">
+            <input id="videoFileInput" type="file" accept="video/mp4,video/webm,video/quicktime,video/*" onchange="onFileSelectedForPreview(this)" class="text-xs text-slate-300 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-cyan-500/20 file:text-cyan-300 hover:file:bg-cyan-500/30 w-full sm:w-auto" />
+            <button id="uploadBtn" onclick="uploadFileIn600KBChunks()" class="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs transition shrink-0 shadow-lg shadow-emerald-500/20">
+              ⬆ Upload & Play on TV Now
             </button>
           </div>
 
           <!-- Chunk Progress Bar -->
           <div id="chunkProgressBox" class="hidden p-3 rounded-xl bg-slate-950 border border-cyan-500/40">
             <div class="flex justify-between text-xs font-mono-code text-cyan-300 mb-1.5">
-              <span id="chunkProgressLabel">Uploading 600KB chunks...</span>
+              <span id="chunkProgressLabel">Uploading 100% original quality video...</span>
               <span id="chunkProgressPct">0%</span>
             </div>
             <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
-              <div id="chunkProgressBar" class="h-full bg-cyan-400 transition-all duration-150" style="width: 0%"></div>
+              <div id="chunkProgressBar" class="h-full bg-emerald-400 transition-all duration-150" style="width: 0%"></div>
             </div>
           </div>
 
           <!-- Or Direct Stream URL -->
           <div class="flex flex-col sm:flex-row gap-3 pt-1">
-            <input id="streamUrlInput" type="url" placeholder="Or paste direct MP4/Stream URL (leave blank for sample 4K stream)" class="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white text-sm focus:outline-none focus:border-cyan-400" />
+            <input id="streamUrlInput" type="url" placeholder="Or paste direct MP4 Video URL (https://.../video.mp4)" class="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white text-sm focus:outline-none focus:border-cyan-400" />
             <button onclick="addStreamVideo()" class="px-4 py-2.5 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white font-semibold text-sm transition shrink-0">
-              + Add Stream to Playlist
+              + Add Video URL & Play
             </button>
           </div>
+        </div>
+      </section>
+
+      <!-- 2. Connected TV Displays — Auto-Paired & Permanent Per-Device Control -->
+      <section class="card-surface rounded-2xl p-5">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <span class="text-xs font-mono-code uppercase tracking-wider text-emerald-400">Permanently Paired • Auto-Play on TV Restart</span>
+            <h2 class="font-display text-lg font-bold text-white">Connected Android TV Screens (<span id="deviceCountBadge">0</span>)</h2>
+          </div>
+          <span class="text-xs text-slate-400">Once paired, TVs stay paired & auto-play on boot</span>
+        </div>
+
+        <div id="devicesContainer" class="space-y-4">
+          <div class="text-center py-8 text-slate-500 text-sm">
+            Waiting for Android TV connection... Open the Android TV app (it auto-pairs within 2.0s) or enter its 6-digit code below.
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. One-Time 6-Digit Screen Pairing (Saved Permanently) -->
+      <section class="card-surface rounded-2xl p-5">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <span class="text-xs font-mono-code uppercase tracking-wider text-cyan-400">One-Time 6-Digit Pairing (Saved Forever)</span>
+            <h2 class="font-display text-lg font-bold text-white">Pair New Android TV Screen</h2>
+          </div>
+          <span class="text-xs text-emerald-400 font-mono-code">✔ Never Needs Re-Pairing</span>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <input id="pairCodeInput" type="text" maxlength="6" placeholder="6-Digit Code (e.g. 127489)" class="px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono-code text-sm focus:outline-none focus:border-cyan-400" />
+          <input id="pairNameInput" type="text" placeholder="Screen Name (e.g. Lobby TV #1)" class="px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white text-sm focus:outline-none focus:border-cyan-400" />
+          <button onclick="pairDevice()" class="px-4 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-sm transition">
+            + Pair TV Permanently
+          </button>
         </div>
       </section>
     </div>
@@ -157,34 +157,38 @@
       <section class="card-surface rounded-2xl p-5">
         <div class="flex items-center justify-between mb-3">
           <div>
-            <span class="text-xs font-mono-code uppercase tracking-wider text-cyan-400">Live Preview Monitor</span>
-            <h2 class="font-display text-lg font-bold text-white">Real-Time Broadcast Output</h2>
+            <span class="text-xs font-mono-code uppercase tracking-wider text-cyan-400">Live Preview Monitor (100% Original Quality)</span>
+            <h2 class="font-display text-lg font-bold text-white" id="previewMonitorTitle">Real-Time Broadcast Output</h2>
           </div>
-          <span id="livePreviewBadge" class="text-xs font-mono-code px-2.5 py-1 rounded-md bg-slate-800 text-cyan-300">LANDSCAPE • FILL</span>
+          <span id="livePreviewBadge" class="text-xs font-mono-code px-2.5 py-1 rounded-md bg-slate-800 text-cyan-300">LANDSCAPE • 0° • FILL</span>
         </div>
 
-        <div class="relative w-full h-48 rounded-xl bg-slate-950 border border-slate-800 overflow-hidden flex items-center justify-center">
-          <video id="livePreviewVideo" class="w-full h-full object-cover transition-transform duration-300 hidden" autoplay loop muted playsinline></video>
+        <div class="relative w-full h-60 rounded-xl bg-slate-950 border border-slate-800 overflow-hidden flex items-center justify-center">
+          <video id="livePreviewVideo" class="w-full h-full object-contain transition-transform duration-300 hidden" controls autoplay loop muted playsinline></video>
           <div id="livePreviewEmpty" class="text-center p-4">
-            <div class="text-slate-500 font-mono-code text-xs mb-1">STANDBY — EMPTY PLAYLIST</div>
-            <div class="text-slate-400 text-xs">Upload a video or add a stream URL to start live playback</div>
+            <div class="text-slate-500 font-mono-code text-xs mb-1">NO VIDEO UPLOADED YET</div>
+            <div class="text-slate-400 text-xs">Select a video file on the left to preview & push to all TVs</div>
           </div>
         </div>
 
-        <!-- Global Default Orientation & Scale Buttons -->
+        <!-- Global Default Orientation, Video Rotate & Scale Buttons -->
         <div class="mt-4 space-y-3">
-          <div class="text-xs font-mono-code text-slate-400">GLOBAL FLEET ORIENTATION & SCALE</div>
+          <div class="text-xs font-mono-code text-slate-400">GLOBAL FLEET ORIENTATION, VIDEO ROTATION & SCALE</div>
           <div class="flex flex-wrap gap-1.5" id="globalOrientationBtns">
-            <button onclick="updateGlobalState({orientation:'LANDSCAPE'})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">LANDSCAPE (0°)</button>
-            <button onclick="updateGlobalState({orientation:'PORTRAIT'})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">PORTRAIT (90°)</button>
-            <button onclick="updateGlobalState({orientation:'ROTATE_180'})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">180° INVERT</button>
-            <button onclick="updateGlobalState({orientation:'ROTATE_270'})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">270° PORTRAIT</button>
+            <button onclick="updateGlobalState({orientation:'LANDSCAPE'})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">LANDSCAPE</button>
+            <button onclick="updateGlobalState({orientation:'PORTRAIT'})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">PORTRAIT</button>
+            <button onclick="updateGlobalState({rotateDelta: -90})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 font-semibold">⟲ Rotate -90°</button>
+            <button onclick="updateGlobalState({rotateDelta: 90})" class="px-2.5 py-1.5 rounded-lg text-xs font-mono-code bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 font-semibold">⟳ Rotate +90°</button>
+            <button onclick="updateGlobalState({videoRotateDegrees: 0})" class="px-2 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">0°</button>
+            <button onclick="updateGlobalState({videoRotateDegrees: 90})" class="px-2 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">90°</button>
+            <button onclick="updateGlobalState({videoRotateDegrees: 180})" class="px-2 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">180°</button>
+            <button onclick="updateGlobalState({videoRotateDegrees: 270})" class="px-2 py-1.5 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">270°</button>
           </div>
           <div class="flex flex-wrap items-center justify-between gap-2 pt-1">
-            <div class="flex gap-1.5">
-              <button onclick="updateGlobalState({scaleMode:'FILL'})" class="px-2.5 py-1 rounded-lg text-xs font-mono-code bg-slate-800 text-slate-200 border border-slate-700">Scale: FILL</button>
-              <button onclick="updateGlobalState({scaleMode:'FIT'})" class="px-2.5 py-1 rounded-lg text-xs font-mono-code bg-slate-800 text-slate-200 border border-slate-700">Scale: FIT</button>
-              <button onclick="updateGlobalState({scaleMode:'ZOOM'})" class="px-2.5 py-1 rounded-lg text-xs font-mono-code bg-slate-800 text-slate-200 border border-slate-700">Scale: ZOOM</button>
+            <div class="flex flex-wrap gap-1.5">
+              <button onclick="updateGlobalState({scaleMode:'FIT'})" class="px-2.5 py-1 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">Scale to Fit (FIT)</button>
+              <button onclick="updateGlobalState({scaleMode:'FILL'})" class="px-2.5 py-1 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">Full Screen (FILL)</button>
+              <button onclick="updateGlobalState({scaleMode:'ZOOM'})" class="px-2.5 py-1 rounded-lg text-xs font-mono-code bg-slate-800 hover:bg-cyan-500/20 text-slate-200 border border-slate-700">Zoom Crop (ZOOM)</button>
             </div>
             <button id="globalMuteBtn" onclick="toggleGlobalMute()" class="px-3 py-1 rounded-lg text-xs font-mono-code bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
               🔊 Audio Live
@@ -193,18 +197,18 @@
         </div>
       </section>
 
-      <!-- 5. Active Playlist Manager (Starts Empty) -->
+      <!-- 5. Active Playlist Manager (Only Your Uploaded Videos — Never Disappears on Refresh) -->
       <section class="card-surface rounded-2xl p-5">
         <div class="flex items-center justify-between mb-3">
           <div>
-            <span class="text-xs font-mono-code uppercase tracking-wider text-cyan-400">Playlist Manager</span>
-            <h2 class="font-display text-lg font-bold text-white">Active Video Creatives (<span id="playlistCountBadge">0</span>)</h2>
+            <span class="text-xs font-mono-code uppercase tracking-wider text-cyan-400">Your Uploaded Videos</span>
+            <h2 class="font-display text-lg font-bold text-white">Saved Video Playlist (<span id="playlistCountBadge">0</span>)</h2>
           </div>
-          <span class="text-xs font-mono-code text-emerald-400">✔ = Offline Ready</span>
+          <span class="text-xs font-mono-code text-emerald-400">✔ Saved Until Deleted</span>
         </div>
         <div id="playlistContainer" class="space-y-2.5">
           <div class="text-center py-6 text-slate-500 text-xs">
-            Playlist is empty (no default demo videos).
+            No videos uploaded yet. Upload your video on the left — it will play across all TVs and stay saved until you click Delete.
           </div>
         </div>
       </section>
@@ -242,14 +246,203 @@
   </main>
 
   <script>
+    // =========================================================================
+    // Permanent LocalStorage + IndexedDB Video & Device Vault (Zero Demo Videos)
+    // =========================================================================
+    const STORAGE_VIDEOS_KEY = "pulsecast_saved_videos_v3";
+    const STORAGE_DELETED_IDS_KEY = "pulsecast_deleted_video_ids_v3";
+    const STORAGE_DEVICES_KEY = "pulsecast_saved_devices_v3";
+    const IDB_NAME = "pulsecast_video_vault_db";
+    const IDB_STORE = "video_blobs";
+
+    function isDemoOrLegacyVideo(v) {
+      if (!v || !v.id) return true;
+      const idStr = String(v.id).toLowerCase();
+      if (idStr.startsWith("seed_") || idStr.startsWith("demo_")) return true;
+      const urlStr = String(v.sourceUrl || "").toLowerCase();
+      return (
+        urlStr.includes("mov_bbb") ||
+        urlStr.includes("w3schools") ||
+        urlStr.includes("flower.mp4") ||
+        urlStr.includes("mdn.mozilla.net") ||
+        urlStr.includes("gtv-videos-bucket") ||
+        urlStr.includes("commondatastorage.googleapis.com") ||
+        urlStr.includes("forbigger") ||
+        urlStr.includes("bigbuckbunny")
+      );
+    }
+
+    // Purge any old v2 storage that might contain demo fallback links
+    try {
+      const legacyV2 = localStorage.getItem("pulsecast_saved_videos_v2");
+      if (legacyV2 && !localStorage.getItem(STORAGE_VIDEOS_KEY)) {
+        const parsedV2 = JSON.parse(legacyV2);
+        if (Array.isArray(parsedV2)) {
+          const cleanV2 = parsedV2
+            .filter(v => !isDemoOrLegacyVideo(v))
+            .map(v => ({ ...v, backupUrl: "" }));
+          localStorage.setItem(STORAGE_VIDEOS_KEY, JSON.stringify(cleanV2));
+        }
+      }
+    } catch (_) {}
+
+    let localSavedVideos = loadSavedVideosFromStorage();
+    let localDeletedIds = loadDeletedIdsFromStorage();
+    let localSavedDevices = loadSavedDevicesFromStorage();
+    let blobObjectUrls = {}; // videoId -> local Blob ObjectURL for instant 100% reliable preview
+    let selectedPreviewVideoId = localSavedVideos.length > 0 ? localSavedVideos[0].id : null;
+    let pendingFilePreviewUrl = ""; // Set when user picks a local file before clicking Upload
+    let pendingFilePreviewTitle = "";
+    let lastPreviewUrl = "";
+    let reseedInFlight = new Set();
+
     let currentState = {
-      liveState: { orientation: "LANDSCAPE", scaleMode: "FILL", isMuted: false, kioskLocked: true },
-      videos: [],
-      devices: [],
+      liveState: { orientation: "LANDSCAPE", videoRotateDegrees: 0, scaleMode: "FILL", isMuted: false, kioskLocked: true },
+      videos: [...localSavedVideos],
+      devices: [...localSavedDevices],
       zones: [],
       otaReleases: []
     };
-    let lastPreviewUrl = "";
+
+    function loadSavedVideosFromStorage() {
+      try {
+        const raw = localStorage.getItem(STORAGE_VIDEOS_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter(v => !isDemoOrLegacyVideo(v));
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function saveVideosToStorage(videosList) {
+      try {
+        localSavedVideos = (videosList || []).filter(v => !isDemoOrLegacyVideo(v));
+        localStorage.setItem(STORAGE_VIDEOS_KEY, JSON.stringify(localSavedVideos));
+      } catch (e) {
+        console.warn("Failed to save videos to localStorage:", e);
+      }
+    }
+
+    function loadDeletedIdsFromStorage() {
+      try {
+        const raw = localStorage.getItem(STORAGE_DELETED_IDS_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function saveDeletedIdsToStorage(idsList) {
+      try {
+        localDeletedIds = Array.from(new Set(idsList));
+        localStorage.setItem(STORAGE_DELETED_IDS_KEY, JSON.stringify(localDeletedIds));
+      } catch (_) {}
+    }
+
+    function loadSavedDevicesFromStorage() {
+      try {
+        const raw = localStorage.getItem(STORAGE_DEVICES_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function saveDevicesToStorage(devicesList) {
+      try {
+        localSavedDevices = Array.isArray(devicesList) ? devicesList : [];
+        localStorage.setItem(STORAGE_DEVICES_KEY, JSON.stringify(localSavedDevices));
+      } catch (_) {}
+    }
+
+    function openVideoVaultDb() {
+      return new Promise((resolve) => {
+        if (!window.indexedDB) return resolve(null);
+        const req = indexedDB.open(IDB_NAME, 1);
+        req.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains(IDB_STORE)) {
+            db.createObjectStore(IDB_STORE);
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+      });
+    }
+
+    async function saveVideoBlobToVault(videoId, fileBlob) {
+      try {
+        if (blobObjectUrls[videoId]) {
+          URL.revokeObjectURL(blobObjectUrls[videoId]);
+        }
+        blobObjectUrls[videoId] = URL.createObjectURL(fileBlob);
+        const db = await openVideoVaultDb();
+        if (!db) return;
+        await new Promise((resolve) => {
+          const tx = db.transaction(IDB_STORE, "readwrite");
+          tx.objectStore(IDB_STORE).put(fileBlob, videoId);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+        });
+      } catch (e) {
+        console.warn("IndexedDB save warning:", e);
+      }
+    }
+
+    async function getVideoBlobFromVault(videoId) {
+      try {
+        const db = await openVideoVaultDb();
+        if (!db) return null;
+        return await new Promise((resolve) => {
+          const tx = db.transaction(IDB_STORE, "readonly");
+          const req = tx.objectStore(IDB_STORE).get(videoId);
+          req.onsuccess = () => resolve(req.result || null);
+          req.onerror = () => resolve(null);
+        });
+      } catch (_) {
+        return null;
+      }
+    }
+
+    async function deleteVideoBlobFromVault(videoId) {
+      try {
+        if (blobObjectUrls[videoId]) {
+          URL.revokeObjectURL(blobObjectUrls[videoId]);
+          delete blobObjectUrls[videoId];
+        }
+        const db = await openVideoVaultDb();
+        if (!db) return;
+        const tx = db.transaction(IDB_STORE, "readwrite");
+        tx.objectStore(IDB_STORE).delete(videoId);
+      } catch (_) {}
+    }
+
+    async function restoreAllVideoBlobsFromVault() {
+      try {
+        for (const v of localSavedVideos) {
+          if (!v || !v.id || blobObjectUrls[v.id]) continue;
+          const blob = await getVideoBlobFromVault(v.id);
+          if (blob instanceof Blob) {
+            blobObjectUrls[v.id] = URL.createObjectURL(blob);
+          }
+        }
+      } catch (_) {}
+    }
+
+    function formatFileSize(bytes) {
+      const b = Number(bytes) || 0;
+      if (b <= 0) return "Original Quality";
+      if (b >= 1024 * 1024) {
+        return (b / (1024 * 1024)).toFixed(2) + " MB";
+      }
+      return Math.max(1, Math.round(b / 1024)) + " KB";
+    }
 
     function showToast(msg) {
       const toast = document.getElementById("syncToast");
@@ -259,20 +452,183 @@
       setTimeout(() => {
         toast.classList.add("hidden");
         toast.classList.remove("flex");
-      }, 3000);
+      }, 3200);
+    }
+
+    function mergeVideosWithVault(serverVideos, serverDeletedIds) {
+      const mergedDeleted = Array.from(new Set([...(localDeletedIds || []), ...(serverDeletedIds || [])]));
+      saveDeletedIdsToStorage(mergedDeleted);
+      const deletedSet = new Set(mergedDeleted);
+
+      const map = new Map();
+      for (const sv of (serverVideos || [])) {
+        if (sv && sv.id && !deletedSet.has(sv.id) && !isDemoOrLegacyVideo(sv)) {
+          map.set(sv.id, { ...sv, backupUrl: "" });
+        }
+      }
+      for (const lv of localSavedVideos) {
+        if (lv && lv.id && !deletedSet.has(lv.id) && !isDemoOrLegacyVideo(lv)) {
+          const existing = map.get(lv.id) || {};
+          map.set(lv.id, { ...lv, ...existing, backupUrl: "" });
+        }
+      }
+      const mergedList = Array.from(map.values()).sort(
+        (a, b) => (Number(b.createdAtEpochMs) || 0) - (Number(a.createdAtEpochMs) || 0)
+      );
+      saveVideosToStorage(mergedList);
+      return mergedList;
+    }
+
+    function mergeDevicesWithVault(serverDevices) {
+      const byCode = new Map();
+      for (const ld of localSavedDevices) {
+        if (ld && (ld.pairingCode || ld.id)) {
+          byCode.set(ld.pairingCode || ld.id, { ...ld, isPaired: true });
+        }
+      }
+      for (const sd of (serverDevices || [])) {
+        if (sd && (sd.pairingCode || sd.id)) {
+          const key = sd.pairingCode || sd.id;
+          const prev = byCode.get(key) || {};
+          byCode.set(key, { ...prev, ...sd, isPaired: true });
+        }
+      }
+      const merged = Array.from(byCode.values());
+      saveDevicesToStorage(merged);
+      return merged;
+    }
+
+    /**
+     * Automatically re-seeds any video binary missing from a cold Vercel serverless instance
+     * using the permanent IndexedDB Blob vault so Android TVs can ALWAYS download & play the video!
+     */
+    async function autoReseedMissingServerFiles(missingIds) {
+      if (!Array.isArray(missingIds) || missingIds.length === 0) return;
+      for (const vidId of missingIds) {
+        if (!vidId || reseedInFlight.has(vidId)) continue;
+        const vidMeta = localSavedVideos.find(v => v.id === vidId);
+        if (!vidMeta) continue;
+        const blob = await getVideoBlobFromVault(vidId);
+        if (!(blob instanceof Blob)) continue;
+
+        reseedInFlight.add(vidId);
+        (async () => {
+          try {
+            const CHUNK_SIZE = 2000 * 1024; // 2MB fast chunks
+            const totalChunks = Math.max(1, Math.ceil(blob.size / CHUNK_SIZE));
+            const fileId = vidId.replace(/^vid_/, "");
+            for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+              const slice = blob.slice(chunkIndex * CHUNK_SIZE, (chunkIndex + 1) * CHUNK_SIZE);
+              const base64Chunk = await blobToBase64(slice);
+              await fetch("/api/upload-chunk", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  fileId,
+                  videoId: vidId,
+                  localFileName: vidMeta.localFileName,
+                  fileName: vidMeta.localFileName || `${vidId}.mp4`,
+                  title: vidMeta.title,
+                  targetDeviceId: vidMeta.targetDeviceId || "ALL",
+                  chunkIndex,
+                  totalChunks,
+                  totalFileSize: blob.size,
+                  base64Chunk,
+                  isReseed: true
+                })
+              });
+            }
+          } catch (_) {
+          } finally {
+            setTimeout(() => reseedInFlight.delete(vidId), 4000);
+          }
+        })();
+      }
     }
 
     async function fetchLiveState() {
       try {
-        const res = await fetch("/api/state");
+        const res = await fetch("/api/reconcile", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            videos: localSavedVideos,
+            deletedVideoIds: localDeletedIds,
+            devices: localSavedDevices
+          })
+        });
         const data = await res.json();
         if (data && data.ok) {
-          currentState = data;
+          const mergedVideos = mergeVideosWithVault(data.videos || [], data.deletedVideoIds || []);
+          const mergedDevices = mergeDevicesWithVault(data.devices || []);
+          currentState = {
+            ...data,
+            videos: mergedVideos,
+            devices: mergedDevices
+          };
           renderDashboard();
+          if (Array.isArray(data.missingServerVideoIds) && data.missingServerVideoIds.length > 0) {
+            autoReseedMissingServerFiles(data.missingServerVideoIds);
+          }
         }
       } catch (e) {
-        document.getElementById("headerSubStatus").textContent = "Reconnecting to /api/state...";
+        currentState.videos = localSavedVideos;
+        currentState.devices = localSavedDevices;
+        renderDashboard();
+        document.getElementById("headerSubStatus").textContent = "Reconnecting to /api/reconcile (Permanent Local Vault Active)...";
       }
+    }
+
+    function onFileSelectedForPreview(inputEl) {
+      const file = inputEl.files && inputEl.files[0];
+      if (!file) return;
+      if (pendingFilePreviewUrl) {
+        URL.revokeObjectURL(pendingFilePreviewUrl);
+      }
+      pendingFilePreviewUrl = URL.createObjectURL(file);
+      pendingFilePreviewTitle = `${file.name} (${formatFileSize(file.size)})`;
+
+      const videoEl = document.getElementById("livePreviewVideo");
+      const emptyEl = document.getElementById("livePreviewEmpty");
+      videoEl.classList.remove("hidden");
+      emptyEl.classList.add("hidden");
+      lastPreviewUrl = pendingFilePreviewUrl;
+      videoEl.src = pendingFilePreviewUrl;
+      videoEl.load();
+      videoEl.play().catch(() => {});
+
+      document.getElementById("previewMonitorTitle").textContent = `Ready to Upload: ${pendingFilePreviewTitle}`;
+      if (!document.getElementById("videoTitleInput").value.trim()) {
+        document.getElementById("videoTitleInput").value = file.name.replace(/\.[^/.]+$/, "");
+      }
+      showToast(`Previewing '${file.name}' — Click "Upload & Play on TV Now" to broadcast!`);
+    }
+
+    function previewSpecificVideo(videoId) {
+      pendingFilePreviewUrl = "";
+      pendingFilePreviewTitle = "";
+      selectedPreviewVideoId = videoId;
+      lastPreviewUrl = ""; // Force reload in preview monitor
+      renderDashboard();
+      showToast("Playing selected video in Live Preview Monitor");
+    }
+
+    async function pushSingleVideoToAllTvs(videoId) {
+      pendingFilePreviewUrl = "";
+      selectedPreviewVideoId = videoId;
+      lastPreviewUrl = "";
+      // Move this video to top of localSavedVideos and push to all TVs
+      const target = localSavedVideos.find(v => v.id === videoId);
+      if (target) {
+        target.createdAtEpochMs = Date.now();
+        const reordered = [target, ...localSavedVideos.filter(v => v.id !== videoId)];
+        saveVideosToStorage(reordered);
+      }
+      await updateGlobalState({
+        assignedVideoId: videoId,
+        lastPushCommand: `PUSH_PLAY_${videoId}_${Date.now()}`
+      });
+      showToast("▶ Pushed video to play immediately on all TVs!");
     }
 
     function renderDashboard() {
@@ -282,12 +638,13 @@
       const onlineCount = devices.filter(d => d.isOnline).length;
 
       document.getElementById("headerSubStatus").textContent =
-        `cms_global/live_state • ${onlineCount}/${devices.length} TV(s) Connected • Playlist: ${videos.length} video(s) • OTA: v${ls.activeOtaVersionName || "1.0.0"}`;
+        `cms_global/live_state • ${onlineCount}/${devices.length} TV(s) Paired & Active • Saved Playlist: ${videos.length} video(s) • OTA: v${ls.activeOtaVersionName || "1.0.0"}`;
 
       document.getElementById("deviceCountBadge").textContent = devices.length;
       document.getElementById("playlistCountBadge").textContent = videos.length;
       document.getElementById("otaVersionBadge").textContent = `v${ls.activeOtaVersionName || "1.0.0"}`;
-      document.getElementById("livePreviewBadge").textContent = `${ls.orientation || "LANDSCAPE"} • ${ls.scaleMode || "FILL"}`;
+      const globalRot = ls.videoRotateDegrees !== undefined ? ls.videoRotateDegrees : 0;
+      document.getElementById("livePreviewBadge").textContent = `${ls.orientation || "LANDSCAPE"} • ${globalRot}° • ${ls.scaleMode || "FILL"}`;
 
       const muteBtn = document.getElementById("globalMuteBtn");
       muteBtn.textContent = ls.isMuted ? "🔇 Audio Muted" : "🔊 Audio Live";
@@ -298,52 +655,90 @@
       // Update Target Device Select for Video Uploader
       const targetSelect = document.getElementById("videoTargetDeviceSelect");
       const currentVal = targetSelect.value || "ALL";
-      targetSelect.innerHTML = `<option value="ALL">Target: All Paired TV Screens</option>` +
-        devices.map(d => `<option value="${d.id}">Target TV: ${d.deviceName} (Code: ${d.pairingCode})</option>`).join("");
-      targetSelect.value = currentVal;
+      targetSelect.innerHTML = `<option value="ALL">Play On: All Connected TV Screens</option>` +
+        devices.map(d => `<option value="${d.id}">Play On TV: ${d.deviceName} (Code: ${d.pairingCode})</option>`).join("");
+      if ([...targetSelect.options].some(o => o.value === currentVal)) {
+        targetSelect.value = currentVal;
+      }
 
       // Update Live Preview Monitor
       const videoEl = document.getElementById("livePreviewVideo");
       const emptyEl = document.getElementById("livePreviewEmpty");
-      if (videos.length > 0) {
+
+      if (pendingFilePreviewUrl) {
+        // Keep showing the newly selected file until the user finishes uploading it!
         videoEl.classList.remove("hidden");
         emptyEl.classList.add("hidden");
-        const activeUrl = videos[0].sourceUrl;
-        if (lastPreviewUrl !== activeUrl) {
-          lastPreviewUrl = activeUrl;
-          videoEl.src = activeUrl;
+        document.getElementById("previewMonitorTitle").textContent = `Ready to Upload: ${pendingFilePreviewTitle}`;
+        if (lastPreviewUrl !== pendingFilePreviewUrl) {
+          lastPreviewUrl = pendingFilePreviewUrl;
+          videoEl.src = pendingFilePreviewUrl;
           videoEl.play().catch(() => {});
         }
-        const rot = ls.orientation === "PORTRAIT" || ls.orientation === "ROTATE_90" ? 90
-          : ls.orientation === "ROTATE_180" ? 180
-          : ls.orientation === "ROTATE_270" ? 270 : 0;
-        videoEl.style.transform = `rotate(${rot}deg)`;
-        videoEl.style.objectFit = ls.scaleMode === "FIT" ? "contain" : "cover";
+      } else if (videos.length > 0) {
+        const targetVid = videos.find(v => v.id === selectedPreviewVideoId) || videos[0];
+        selectedPreviewVideoId = targetVid.id;
+        videoEl.classList.remove("hidden");
+        emptyEl.classList.add("hidden");
+        const bestPreviewUrl = blobObjectUrls[targetVid.id] || targetVid.sourceUrl;
+        document.getElementById("previewMonitorTitle").textContent =
+          `Playing: ${targetVid.title} (${formatFileSize(targetVid.sizeBytes)})`;
+
+        if (bestPreviewUrl && lastPreviewUrl !== bestPreviewUrl) {
+          lastPreviewUrl = bestPreviewUrl;
+          videoEl.src = bestPreviewUrl;
+          videoEl.load();
+          videoEl.play().catch(() => {});
+        }
       } else {
         videoEl.classList.add("hidden");
         emptyEl.classList.remove("hidden");
         lastPreviewUrl = "";
+        document.getElementById("previewMonitorTitle").textContent = "Real-Time Broadcast Output";
       }
 
-      // Render Per-Device Cards with individual Orientation & Video Selectors
+      const rot = ls.videoRotateDegrees !== undefined
+        ? Number(ls.videoRotateDegrees)
+        : (ls.orientation === "ROTATE_90" ? 90 : ls.orientation === "ROTATE_180" ? 180 : ls.orientation === "ROTATE_270" ? 270 : 0);
+      videoEl.style.transform = `rotate(${rot}deg)`;
+      videoEl.style.objectFit = ls.scaleMode === "FIT" ? "contain" : "cover";
+
+      // Render Per-Device Cards
       const devContainer = document.getElementById("devicesContainer");
       if (devices.length === 0) {
-        devContainer.innerHTML = `<div class="text-center py-8 text-slate-500 text-sm">No Android TV screens paired yet. Open the Android TV app (it auto-registers within 2.5s) or enter its 6-digit code above.</div>`;
+        devContainer.innerHTML = `<div class="text-center py-8 text-slate-500 text-sm">Waiting for Android TV connection... Open the Android TV app (it auto-pairs within 2.0s) or enter its 6-digit code below.</div>`;
       } else {
         devContainer.innerHTML = devices.map(d => {
-          const dotClass = d.isOnline ? "bg-emerald-400 pulse-dot" : "bg-rose-500";
-          const statusText = d.isOnline ? "CONNECTED" : "OFFLINE";
+          const dotClass = d.isOnline ? "bg-emerald-400 pulse-dot" : "bg-amber-400";
+          const statusText = d.isOnline ? "PAIRED & LIVE (2s SYNC)" : "PAIRED (STANDBY / AUTO-RECONNECT)";
           const statusBadge = d.isOnline
             ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
-            : "bg-rose-500/15 text-rose-300 border-rose-500/30";
+            : "bg-amber-500/15 text-amber-300 border-amber-500/30";
 
-          const videoOptions = `<option value="ALL" ${(!d.assignedVideoId || d.assignedVideoId === "ALL") ? "selected" : ""}>Loop All Playlist Videos (${videos.length})</option>` +
-            videos.map(v => `<option value="${v.id}" ${d.assignedVideoId === v.id ? "selected" : ""}>Play Only: ${v.title}</option>`).join("");
+          const videoOptions = `<option value="ALL" ${(!d.assignedVideoId || d.assignedVideoId === "ALL") ? "selected" : ""}>Play All Uploaded Videos (${videos.length})</option>` +
+            videos.map(v => `<option value="${v.id}" ${d.assignedVideoId === v.id ? "selected" : ""}>Play Only: ${v.title} (${formatFileSize(v.sizeBytes)})</option>`).join("");
 
-          const orientations = ["LANDSCAPE", "PORTRAIT", "ROTATE_90", "ROTATE_180", "ROTATE_270"];
-          const orientBtns = orientations.map(o => {
-            const active = (d.orientation || "LANDSCAPE") === o;
-            return `<button onclick="controlDevice('${d.id}', {orientation:'${o}'})" class="px-2 py-1 rounded text-[11px] font-mono-code border ${active ? 'bg-cyan-500 text-slate-950 font-bold border-cyan-400' : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-cyan-500/50'}">${o}</button>`;
+          const screenOrient = (d.orientation === "PORTRAIT") ? "PORTRAIT" : "LANDSCAPE";
+          const videoDeg = d.videoRotateDegrees !== undefined ? Number(d.videoRotateDegrees) : 0;
+          const devScale = d.scaleMode || "FILL";
+
+          const screenOrientBtns = ["LANDSCAPE", "PORTRAIT"].map(o => {
+            const active = screenOrient === o;
+            return `<button onclick="controlDevice('${d.id}', {orientation:'${o}'})" class="px-2.5 py-1 rounded text-[11px] font-mono-code border ${active ? 'bg-cyan-500 text-slate-950 font-bold border-cyan-400' : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-cyan-500/50'}">${o}</button>`;
+          }).join("");
+
+          const angleBtns = [0, 90, 180, 270].map(deg => {
+            const active = videoDeg === deg;
+            return `<button onclick="controlDevice('${d.id}', {videoRotateDegrees:${deg}})" class="px-2 py-1 rounded text-[11px] font-mono-code border ${active ? 'bg-emerald-500 text-slate-950 font-bold border-emerald-400' : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-emerald-500/50'}">${deg}°</button>`;
+          }).join("");
+
+          const scaleBtns = [
+            { mode: "FIT", label: "Scale to Fit" },
+            { mode: "FILL", label: "Full Screen" },
+            { mode: "ZOOM", label: "Zoom" }
+          ].map(s => {
+            const active = devScale === s.mode;
+            return `<button onclick="controlDevice('${d.id}', {scaleMode:'${s.mode}'})" class="px-2.5 py-1 rounded text-[11px] font-mono-code border ${active ? 'bg-indigo-500 text-white font-bold border-indigo-400' : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-indigo-500/50'}">${s.label}</button>`;
           }).join("");
 
           return `
@@ -353,7 +748,7 @@
                   <span class="w-3 h-3 rounded-full ${dotClass}"></span>
                   <div>
                     <div class="font-semibold text-sm text-white">${d.deviceName}</div>
-                    <div class="text-xs font-mono-code text-slate-400">Code: <span class="text-cyan-400 font-bold">${d.pairingCode}</span> • Now Playing: <span class="text-emerald-300">${d.currentVideoTitle || "Standby"}</span> • ✔ Cached: ${d.cachedVideoCount || 0}</div>
+                    <div class="text-xs font-mono-code text-slate-400">Code: <span class="text-cyan-400 font-bold">${d.pairingCode}</span> • Playing: <span class="text-emerald-300">${d.currentVideoTitle || "Ready"}</span> • Rotate: <span class="text-emerald-400 font-bold">${videoDeg}°</span> • Scale: <span class="text-indigo-300 font-bold">${devScale}</span></div>
                   </div>
                 </div>
                 <div class="flex items-center gap-2">
@@ -366,47 +761,67 @@
 
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-800/80">
                 <div>
-                  <label class="block text-[11px] font-mono-code text-slate-400 mb-1">DEVICE ORIENTATION (INDEPENDENT)</label>
-                  <div class="flex flex-wrap gap-1">${orientBtns}</div>
+                  <label class="block text-[11px] font-mono-code text-slate-400 mb-1">1. SCREEN ORIENTATION & SCALE MODE</label>
+                  <div class="flex flex-wrap gap-1.5 items-center">
+                    ${screenOrientBtns}
+                    <span class="text-slate-700">|</span>
+                    ${scaleBtns}
+                  </div>
                 </div>
                 <div>
-                  <label class="block text-[11px] font-mono-code text-slate-400 mb-1">WHICH VIDEO TO PLAY ON THIS TV</label>
-                  <select onchange="controlDevice('${d.id}', {assignedVideoId: this.value})" class="w-full px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-cyan-400">
-                    ${videoOptions}
-                  </select>
+                  <label class="block text-[11px] font-mono-code text-slate-400 mb-1">2. ROTATE VIDEO (+90° / -90° / ANGLE)</label>
+                  <div class="flex flex-wrap gap-1 items-center">
+                    <button onclick="controlDevice('${d.id}', {rotateDelta: -90})" class="px-2.5 py-1 rounded text-[11px] font-mono-code font-bold bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40">⟲ -90°</button>
+                    <button onclick="controlDevice('${d.id}', {rotateDelta: 90})" class="px-2.5 py-1 rounded text-[11px] font-mono-code font-bold bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40">⟳ +90°</button>
+                    ${angleBtns}
+                  </div>
                 </div>
               </div>
 
-              <div class="flex items-center justify-between text-[11px] font-mono-code text-slate-500 pt-1">
-                <span>OTA Firmware: v${d.installedVersionName || '1.0.0'} (${d.otaStatus || 'UP_TO_DATE'})</span>
-                <span>Backup Slot: v${d.previousSlotVersionName || '1.0.0'}</span>
+              <div class="pt-1">
+                <label class="block text-[11px] font-mono-code text-slate-400 mb-1">3. WHICH UPLOADED VIDEO TO PLAY ON THIS TV</label>
+                <select onchange="controlDevice('${d.id}', {assignedVideoId: this.value})" class="w-full px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-cyan-400">
+                  ${videoOptions}
+                </select>
               </div>
             </div>
           `;
         }).join("");
       }
 
-      // Render Playlist Items
+      // Render Permanent Playlist Items with Preview, Play on TV & Delete buttons
       const plContainer = document.getElementById("playlistContainer");
       if (videos.length === 0) {
-        plContainer.innerHTML = `<div class="text-center py-6 text-slate-500 text-xs">Playlist is empty (no default demo videos).</div>`;
+        plContainer.innerHTML = `<div class="text-center py-6 text-slate-500 text-xs">No videos uploaded yet. Upload your video on the left — it will play across all TVs and stay saved until you click Delete.</div>`;
       } else {
-        plContainer.innerHTML = videos.map(v => `
-          <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between gap-3">
-            <div class="min-w-0">
-              <div class="flex items-center gap-2">
-                <span class="font-medium text-sm text-white truncate">${v.title}</span>
-                <span class="px-2 py-0.5 text-[10px] font-mono-code rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">✔ Offline Ready</span>
+        plContainer.innerHTML = videos.map((v, idx) => {
+          const isPreviewing = selectedPreviewVideoId === v.id && !pendingFilePreviewUrl;
+          return `
+            <div class="p-3 rounded-xl bg-slate-950 border ${isPreviewing ? 'border-cyan-400' : 'border-slate-800'} flex flex-wrap items-center justify-between gap-3">
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2">
+                  ${idx === 0 ? '<span class="px-1.5 py-0.5 text-[10px] font-mono-code rounded bg-cyan-500/20 text-cyan-300 font-bold">PRIMARY LIVE</span>' : ''}
+                  <span class="font-medium text-sm text-white truncate">${v.title}</span>
+                  <span class="px-2 py-0.5 text-[10px] font-mono-code rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">✔ ${formatFileSize(v.sizeBytes)}</span>
+                </div>
+                <div class="text-xs font-mono-code text-slate-400 truncate mt-0.5">
+                  Target: ${v.targetDeviceId || 'ALL TVs'} • Permanently Saved
+                </div>
               </div>
-              <div class="text-xs font-mono-code text-slate-400 truncate mt-0.5">
-                ${v.chunkCount || 1} x 600KB chunks • Target: ${v.targetDeviceId || 'ALL'}
+              <div class="flex items-center gap-1.5 shrink-0">
+                <button onclick="previewSpecificVideo('${v.id}')" class="px-2.5 py-1 rounded-lg ${isPreviewing ? 'bg-cyan-500 text-slate-950 font-bold' : 'bg-cyan-500/15 hover:bg-cyan-500/30 text-cyan-300'} text-xs font-mono-code">
+                  👁 Preview
+                </button>
+                <button onclick="pushSingleVideoToAllTvs('${v.id}')" class="px-2.5 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-xs font-mono-code font-semibold">
+                  ▶ Play on TVs
+                </button>
+                <button onclick="deleteVideo('${v.id}')" class="px-2.5 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 text-xs font-mono-code">
+                  Delete
+                </button>
               </div>
             </div>
-            <button onclick="deleteVideo('${v.id}')" class="px-2.5 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 text-xs font-mono-code shrink-0">
-              Delete
-            </button>
-          </div>
-        `).join("");
+          `;
+        }).join("");
       }
     }
 
@@ -414,9 +829,14 @@
       await fetch("/api/state", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch)
+        body: JSON.stringify({
+          ...patch,
+          clientVideos: localSavedVideos,
+          deletedVideoIds: localDeletedIds,
+          clientDevices: localSavedDevices
+        })
       });
-      showToast("Synced global setting to Android TV fleet!");
+      showToast("Synced setting to Android TV fleet!");
       fetchLiveState();
     }
 
@@ -426,8 +846,11 @@
     }
 
     async function pushAndPlayAll() {
-      await updateGlobalState({ lastPushCommand: "PUSH_PLAY_" + Date.now() });
-      showToast("Instant Push & Play broadcasted to all TV screens!");
+      await updateGlobalState({
+        assignedVideoId: "ALL",
+        lastPushCommand: "PUSH_PLAY_" + Date.now()
+      });
+      showToast("▶ Instant Push & Play broadcasted to all TV screens!");
     }
 
     async function pairDevice() {
@@ -437,39 +860,70 @@
         alert("Please enter the 6-digit pairing code shown on the Android TV client.");
         return;
       }
-      await fetch("/api/pair", {
+      const res = await fetch("/api/pair", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pairingCode: code, deviceName: name || `Android TV #${code}`, isPaired: true })
+        body: JSON.stringify({
+          pairingCode: code,
+          deviceName: name || `Android TV #${code}`,
+          isPaired: true,
+          clientVideos: localSavedVideos,
+          deletedVideoIds: localDeletedIds,
+          clientDevices: localSavedDevices
+        })
       });
+      const data = await res.json().catch(() => ({}));
+      if (data && data.device) {
+        mergeDevicesWithVault([data.device]);
+      }
       document.getElementById("pairCodeInput").value = "";
       document.getElementById("pairNameInput").value = "";
-      showToast(`Paired Android TV (${code})!`);
+      showToast(`✔ Permanently Paired Android TV (${code})!`);
       fetchLiveState();
     }
 
     async function controlDevice(deviceId, patch) {
-      await fetch("/api/device-control", {
+      const res = await fetch("/api/device-control", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ deviceId, ...patch })
       });
-      showToast(`Synced device control to ${deviceId}!`);
+      const data = await res.json().catch(() => ({}));
+      if (data && data.devices) {
+        mergeDevicesWithVault(data.devices);
+      }
+      showToast(`Synced control to TV!`);
       fetchLiveState();
+    }
+
+    function blobToBase64(blobSlice) {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(",")[1]);
+        reader.readAsDataURL(blobSlice);
+      });
     }
 
     async function uploadFileIn600KBChunks() {
       const fileInput = document.getElementById("videoFileInput");
-      const file = fileInput.files[0];
+      const file = fileInput.files && fileInput.files[0];
       if (!file) {
-        alert("Select a video file first, or use the Stream URL box below.");
+        alert("Please choose a video file first, or paste a direct video URL below.");
         return;
       }
-      const title = document.getElementById("videoTitleInput").value.trim() || file.name;
+      const title = document.getElementById("videoTitleInput").value.trim() || file.name.replace(/\.[^/.]+$/, "");
       const targetDeviceId = document.getElementById("videoTargetDeviceSelect").value || "ALL";
-      const CHUNK_SIZE = 600 * 1024; // 600KB chunks
+      const CHUNK_SIZE = 2000 * 1024; // 2MB fast lossless chunks (fits well within Vercel 4.5MB body limit)
       const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
       const fileId = Date.now().toString(36);
+      const vidId = `vid_${fileId}`;
+      const safeFileName = `${fileId}_${(file.name || "video.mp4").replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+
+      // 1. Immediately save 100% original quality video Blob in IndexedDB & local ObjectURL
+      await saveVideoBlobToVault(vidId, file);
+      pendingFilePreviewUrl = "";
+      pendingFilePreviewTitle = "";
+      selectedPreviewVideoId = vidId;
 
       const progBox = document.getElementById("chunkProgressBox");
       const progBar = document.getElementById("chunkProgressBar");
@@ -477,63 +931,125 @@
       const progLabel = document.getElementById("chunkProgressLabel");
       progBox.classList.remove("hidden");
 
-      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-        const slice = file.slice(chunkIndex * CHUNK_SIZE, (chunkIndex + 1) * CHUNK_SIZE);
-        const base64Chunk = await new Promise((resolve) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result.split(",")[1]);
-          reader.readAsDataURL(slice);
-        });
+      const base64ChunksCache = new Array(totalChunks);
+      let uploadedVideoEntry = null;
 
-        progLabel.textContent = `Uploading '${title}' — Chunk ${chunkIndex + 1}/${totalChunks} (600KB)...`;
-        const pct = Math.round(((chunkIndex + 1) / totalChunks) * 100);
-        progBar.style.width = `${pct}%`;
-        progPct.textContent = `${pct}%`;
-
-        await fetch("/api/upload-chunk", {
+      async function sendSingleChunk(cIdx) {
+        if (!base64ChunksCache[cIdx]) {
+          const slice = file.slice(cIdx * CHUNK_SIZE, (cIdx + 1) * CHUNK_SIZE);
+          base64ChunksCache[cIdx] = await blobToBase64(slice);
+        }
+        const resp = await fetch("/api/upload-chunk", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             fileId,
+            videoId: vidId,
+            localFileName: safeFileName,
             fileName: file.name,
             title,
             targetDeviceId,
-            chunkIndex,
+            chunkIndex: cIdx,
             totalChunks,
-            base64Chunk
+            totalFileSize: file.size,
+            base64Chunk: base64ChunksCache[cIdx]
           })
         });
+        return await resp.json().catch(() => ({}));
       }
 
-      setTimeout(() => progBox.classList.add("hidden"), 800);
+      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+        progLabel.textContent = `Uploading 100% Original Quality '${title}' — Part ${chunkIndex + 1}/${totalChunks} (${formatFileSize(file.size)})...`;
+        const pct = Math.round(((chunkIndex + 1) / totalChunks) * 100);
+        progBar.style.width = `${pct}%`;
+        progPct.textContent = `${pct}%`;
+
+        let respData = await sendSingleChunk(chunkIndex);
+        // If Vercel routed to a second container that was missing an earlier chunk, fill it in immediately
+        if (respData && Array.isArray(respData.missingChunks) && respData.missingChunks.length > 0) {
+          for (const missingIdx of respData.missingChunks) {
+            await sendSingleChunk(missingIdx);
+          }
+          respData = await sendSingleChunk(chunkIndex);
+        }
+        if (respData && respData.video) {
+          uploadedVideoEntry = respData.video;
+        }
+      }
+
+      const finalVideoEntry = uploadedVideoEntry || {
+        id: vidId,
+        title,
+        sourceUrl: `${window.location.origin}/api/videos/file/${encodeURIComponent(safeFileName)}`,
+        backupUrl: "",
+        localFileName: safeFileName,
+        targetDeviceId,
+        sizeBytes: file.size,
+        chunkCount: totalChunks,
+        isVerifiedCached: true,
+        sortOrder: 0,
+        createdAtEpochMs: Date.now()
+      };
+
+      // Put newly uploaded video FIRST in permanent storage so all TVs & Preview play it immediately!
+      saveDeletedIdsToStorage(localDeletedIds.filter(id => id !== vidId));
+      const updatedList = [finalVideoEntry, ...localSavedVideos.filter(v => v.id !== vidId)];
+      saveVideosToStorage(updatedList);
+      currentState.videos = updatedList;
+      selectedPreviewVideoId = vidId;
+      lastPreviewUrl = "";
+      renderDashboard();
+
+      setTimeout(() => progBox.classList.add("hidden"), 700);
       fileInput.value = "";
       document.getElementById("videoTitleInput").value = "";
-      showToast(`Uploaded '${title}' (${totalChunks} x 600KB chunks) & pushed to TV!`);
-      fetchLiveState();
+      showToast(`✔ Uploaded '${title}' (${formatFileSize(file.size)}) — Playing on Live Preview & All TVs!`);
+      await fetchLiveState();
     }
 
     async function addStreamVideo() {
-      const title = document.getElementById("videoTitleInput").value.trim() || "Broadcast Ad Spot";
+      const title = document.getElementById("videoTitleInput").value.trim() || "Broadcast Video";
       const sourceUrl = document.getElementById("streamUrlInput").value.trim();
+      if (!sourceUrl) {
+        alert("Please paste a valid direct MP4 video URL, or select a video file above.");
+        return;
+      }
       const targetDeviceId = document.getElementById("videoTargetDeviceSelect").value || "ALL";
-      await fetch("/api/videos", {
+      const vidId = `vid_${Date.now().toString(36)}`;
+      const res = await fetch("/api/videos", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, sourceUrl, targetDeviceId })
+        body: JSON.stringify({ id: vidId, title, sourceUrl, targetDeviceId })
       });
+      const data = await res.json().catch(() => ({}));
+      if (data && data.video) {
+        saveDeletedIdsToStorage(localDeletedIds.filter(id => id !== data.video.id));
+        const updatedList = [data.video, ...localSavedVideos.filter(v => v.id !== data.video.id)];
+        saveVideosToStorage(updatedList);
+        pendingFilePreviewUrl = "";
+        selectedPreviewVideoId = data.video.id;
+        lastPreviewUrl = "";
+      }
       document.getElementById("videoTitleInput").value = "";
       document.getElementById("streamUrlInput").value = "";
-      showToast(`Added '${title}' to live playlist!`);
+      showToast(`✔ Added '${title}' & pushed to all TVs!`);
       fetchLiveState();
     }
 
     async function deleteVideo(videoId) {
+      saveDeletedIdsToStorage([...localDeletedIds, videoId]);
+      saveVideosToStorage(localSavedVideos.filter(v => v.id !== videoId));
+      await deleteVideoBlobFromVault(videoId);
+      if (selectedPreviewVideoId === videoId) {
+        selectedPreviewVideoId = localSavedVideos.length > 0 ? localSavedVideos[0].id : null;
+        lastPreviewUrl = "";
+      }
       await fetch("/api/videos/delete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ videoId })
       });
-      showToast("Removed video from playlist");
+      showToast("Deleted video from playlist & storage");
       fetchLiveState();
     }
 
@@ -562,8 +1078,13 @@
       fetchLiveState();
     }
 
-    fetchLiveState();
-    setInterval(fetchLiveState, 2000);
+    // Boot sequence: restore IndexedDB blobs, render immediately from localStorage, then start 2.0s sync
+    (async function initDashboard() {
+      await restoreAllVideoBlobsFromVault();
+      renderDashboard();
+      await fetchLiveState();
+      setInterval(fetchLiveState, 2000);
+    })();
   </script>
 </body>
 </html>
